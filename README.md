@@ -144,7 +144,7 @@ If multiple snapshots are present an expander lists older files with individual 
 
 All actor-related curation in one place. Actors are the people and organisations credited on Marketplace items. "Contributor" is one of the roles an actor can have; the term "actor" is used throughout this page.
 
-A shared **Load actors from API** bar at the top of the page fetches all ~9,000 actors from `GET /api/actors` and stores them in `st.session_state["actor_details"]`. This data is used across all three tabs and only needs to be fetched once per session.
+A shared **Load actors from API** bar at the top of the page fetches all ~9,000 actors from `GET /api/actors` and stores them in `st.session_state["actor_details"]`. This data is used across all four tabs and only needs to be fetched once per session.
 
 ---
 
@@ -183,7 +183,10 @@ High-confidence groups are shown first under **Suggested merges** and open expan
 ##### Running the search
 
 1. Select which field(s) to match on: `name`, `website`.
-2. Click **Find Duplicates**.
+2. Optionally leave **Case-insensitive matching** checked (default) so values like `John Smith` and `john smith` (or with stray leading/trailing whitespace) are treated as the same value. Uncheck it to require an exact, case-sensitive match.
+3. Click **Find Duplicates**.
+
+Group headers show the original casing of the matched names (joined with `/` when they differ), even when the underlying match was case-insensitive.
 
 Results are stored in session state and persist while navigating between tabs.
 
@@ -218,6 +221,16 @@ For each candidate calls `GET /api/actors/{id}?items=true` to confirm the API it
 **Step 3 — Review and delete**
 
 Confirmed orphans are shown in an editable table. All rows start unchecked; actors must be selected explicitly. Deletion calls `DELETE /api/actors/{id}?force=false` — actors affiliated with other actors are refused by the API and reported individually.
+
+---
+
+#### Tab 4 — Manual Merge
+
+Merges two or more actors directly by ID, for duplicates the automatic Duplicates scan doesn't group together (e.g. names that differ by more than casing/whitespace).
+
+**Find actor IDs** — a name search over the loaded actor data (or the snapshot, if actor data hasn't been loaded). Case-insensitive; supports `*` and `?` as wildcards (e.g. `kurzmeier*`, `*university*`). Without wildcards it's a plain substring match. Results show `id`, `name`, `email` (if loaded), and `website` so a curator can look up the IDs to merge.
+
+**Merge by ID** — enter a **Keep** ID and one or more **Merge** IDs (comma-separated). Once both are filled in, the tool fetches each actor live via `GET /api/actors/{id}` and shows a preview table (name/email/website per ID) before anything happens. A confirmation checkbox — scoped to that specific keep/merge ID combination — must be ticked before the merge button is enabled. The merge itself calls the same `merge_actors()` used by the Duplicates tab (attribute consolidation, then `POST /api/actors/{keep_id}/merge`), so no data is lost and the button is disabled again once that combination has been merged.
 
 ---
 
@@ -480,7 +493,7 @@ All functions that communicate with the live Marketplace API. Every write functi
 | `fetch_all_actors(api_url, bearer)` | Paginated `GET /api/actors`; returns DataFrame `[id, name, email, website, item_count]` |
 | `verify_orphans(ids, api_url, bearer, batch_size)` | Batched concurrent `GET /api/actors/{id}?items=true` with retries; returns `dict[id → bool\|None]` |
 | `delete_actor(actor_id)` | `DELETE /api/actors/{id}?force=false` |
-| `_get_actor(actor_id, api_url, bearer)` | `GET /api/actors/{id}`; returns full actor record including externalIds and affiliations |
+| `get_actor(actor_id, api_url, bearer)` | `GET /api/actors/{id}`; returns full actor record including externalIds and affiliations |
 | `_consolidate_actor_payload(actors)` | Merges email, website, and externalIds from a list of actor records; used before merge to preserve all attributes |
 | `merge_actors(keep_id, merge_ids)` | 3-step: GET all actors → PUT consolidated attributes → `POST /api/actors/{id}/merge?with={ids}` |
 | `get_item(category, persistent_id, api_url, bearer)` | `GET /api/{path}/{id}`; returns full item dict |
@@ -545,7 +558,7 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 |---|---|---|
 | `app.py` | Login | Entry point; redirects to Data Source after login |
 | `pages/1_Data.py` | Data Source | Landing page; snapshot management with environment labels |
-| `pages/2_Actors.py` | Actors | Browse contributions; find and merge duplicates; remove orphaned actors |
+| `pages/2_Actors.py` | Actors | Browse contributions; find and merge duplicates; remove orphaned actors; manually merge by ID |
 | `pages/3_Item_Duplicates.py` | Item Duplicates | Item field duplicate detection with side-by-side live comparison |
 | `pages/4_URL_Checker.py` | URL Checker | Concurrent URL reachability check |
 | `pages/5_Keywords.py` | Keywords | Keyword vocabulary curation including near-duplicate merge |
@@ -559,12 +572,14 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `bearer` | `str` | Login | All API calls |
 | `username` | `str` | Login | Data Source display |
 | `env` | `dict` | Login | All pages |
-| `actor_details` | `DataFrame` | Actors page | Actors (all three tabs) |
+| `actor_details` | `DataFrame` | Actors page | Actors (all four tabs) |
 | `actor_dup_summary` | `DataFrame` | Actors — Duplicates tab | Actors — Duplicates tab |
 | `actor_dup_full` | `DataFrame` | Actors — Duplicates tab | Actors — Duplicates tab |
+| `actor_dup_id_to_name` | `dict` | Actors — Duplicates tab | Restores original-case names for display after case-insensitive matching |
 | `merged_groups` | `dict` | Actors — Duplicates tab | Disables merge buttons after merge |
 | `expander_open` | `dict` | Actors — Duplicates tab | Keeps expanders open after merge |
 | `orphan_verified` | `dict` | Actors — Orphaned tab | Verification results cache |
+| `manual_merged` | `dict` | Actors — Manual Merge tab | Disables merge button after merge, keyed by keep/merge ID combination |
 | `item_dup_result` | `DataFrame` | Item Duplicates | Item Duplicates (survives fetch-button reruns) |
 | `item_dup_props` | `list` | Item Duplicates | Item Duplicates |
 | `item_dup_filtered` | `int` | Item Duplicates | Count of excluded no-accessibleAt items |

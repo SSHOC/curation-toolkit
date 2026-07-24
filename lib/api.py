@@ -12,7 +12,7 @@ fetch_all_actors()           – paginated GET /api/actors → DataFrame
 _check_one_actor()           – GET /api/actors/{id}?items=true with retry
 verify_orphans()             – concurrent batch verification of actor candidates
 delete_actor()               – DELETE /api/actors/{id}
-_get_actor()                 – GET /api/actors/{id} (full record, used before merge)
+get_actor()                  – GET /api/actors/{id} (full record, used before merge and in manual-merge preview)
 _consolidate_actor_payload() – build PUT-ready ActorCore merging attrs from multiple actors
 merge_actors()               – 3-step merge: GET all → PUT consolidated → POST merge
 
@@ -508,7 +508,7 @@ def create_snapshot_from_api(api_url: str, bearer: str, data_dir, env_label: str
     return True, f"Created {out_path.name} with {len(all_items)} items."
 
 
-def _get_actor(actor_id: int, api_url: str, bearer: str) -> dict:
+def get_actor(actor_id: int, api_url: str, bearer: str) -> dict:
     """Fetch the full actor record from GET /api/actors/{id}. Raises on error."""
     resp = requests.get(
         f"{api_url}/api/actors/{actor_id}",
@@ -587,9 +587,9 @@ def merge_actors(keep_id: int, merge_ids: list) -> tuple[bool, str]:
 
     # ── Step 1: fetch all actors ──────────────────────────────────────────────
     try:
-        actors = [_get_actor(keep_id, api_url, bearer)]
+        actors = [get_actor(keep_id, api_url, bearer)]
         for mid in merge_ids:
-            actors.append(_get_actor(mid, api_url, bearer))
+            actors.append(get_actor(mid, api_url, bearer))
     except Exception as e:
         return False, f"Failed to fetch actor data before merge: {e}"
 
