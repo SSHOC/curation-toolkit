@@ -238,6 +238,10 @@ Merges two or more actors directly by ID, for duplicates the automatic Duplicate
 
 **File:** `pages/3_Item_Duplicates.py`
 
+Two tabs: finding duplicate items, and merging two of them together.
+
+#### Tab 1 — Find Duplicates
+
 Scans snapshot items for shared values in selected fields.
 
 Items without an `accessibleAt` URL are **excluded before the search**. These are stub or incomplete entries that cannot be meaningfully distinguished from each other by URL and would produce noise in the results. The count of excluded items is shown when the search runs.
@@ -249,15 +253,31 @@ Items without an `accessibleAt` URL are **excluded before the search**. These ar
 
 Results persist in session state while navigating the page.
 
-#### Summary table
+##### Summary table
 
 Shows matched items with label, category, persistentId, and a clickable link to each item in the Marketplace. Downloadable as CSV.
 
-#### Side-by-side comparison
+##### Side-by-side comparison
 
 Below the summary table each duplicate group appears as a collapsible expander. By default it shows snapshot data (label, category, ID, MP link). Click **Fetch live data from API** to load the full current record for each item and display them side by side. Each card shows label, status, source system, access URLs, contributor names, and description. Fetched data is cached per group in session state so it is not re-fetched when other controls are interacted with.
 
 > **Note:** `accessibleAt` is a list value and cannot be used directly as a groupby key. It is converted to a comma-separated string for grouping purposes; the original list values are preserved in the data.
+
+#### Tab 2 — Merge Items
+
+Merges two items of the **same category** by `persistentId` (found via name lookup — typing an ID shows the matching snapshot label right below the field — or copied over from the Find Duplicates tab). Workflow steps are not supported — merge the parent workflow instead.
+
+The Marketplace API has a dedicated per-category merge endpoint (`POST /api/{category-path}/merge?with={ids}`), but this tool deliberately does **not** use it. Instead it:
+
+1. `GET`s both full item records and shows a **Keep vs. merge away** identity comparison (label, status, source, version, description, Marketplace link).
+2. Shows a **"Choose what to keep"** section: for each of `contributors`, `properties` (keyword/concept/free-text values), `externalIds`, `accessibleAt` URLs, and `media`, a side-by-side pair of columns — :green[green, left] = already on the kept item, :blue[blue, right] = would be added from the merge-away item — each entry with its own checkbox, all checked by default (a full union). A value present on both items is shown once, on the green/keep side. Uncheck anything that shouldn't survive the merge. `relatedItems` get the same treatment, except any relation between the keep and merge item themselves is dropped before it's even shown (it would otherwise become a dangling self-reference once the merge item is deleted).
+3. `label` always comes from the kept item (that's how you choose which one to keep); `description`, `version`, `source`, `sourceItemId`, and `thumbnail` use the kept item's value, falling back to the merged item's if the kept item has none — these aren't checkbox-driven since there's only one value to pick, not a list to curate.
+4. Shows an **Outcome preview** — the fully expanded result of your checkbox choices plus the scalar fallbacks above — and a list of any other snapshot items that reference the merge-away item, so the curator sees exactly what will change before anything is written.
+5. On confirmation: `PUT`s the curated payload onto the kept item, repoints `relatedItems` on every referrer found in step 4 (GET → swap the reference → PUT, same pattern as the Keywords page's `fix_item_keyword()`), then `DELETE`s the merged-away item. A referrer that fails to repoint is reported individually and does not abort the merge.
+
+> **Warning shown in the UI:** if either item came from an automated harvest/ingest (check its `source` field), a future harvest run may re-create the item that was just merged away, since the toolkit has no way to tell an external harvester the two records were the same. If a duplicate keeps reappearing, fix the source feed rather than re-merging it every time.
+
+The confirmation checkbox and merge button are scoped to the specific (category, keep ID, merge ID) combination, and — like the Actors Manual Merge tab — once a merge succeeds the tool shows the stored success message instead of re-fetching the now-deleted item on rerun.
 
 ---
 
@@ -446,6 +466,7 @@ All write operations target the environment selected at login.
 | Delete actor | DELETE | `/api/actors/{id}?force=false` | Refused if actor has affiliations |
 | Get item | GET | `/api/{category-path}/{persistentId}` | Full item payload |
 | Update item | PUT | `/api/{category-path}/{persistentId}` | Requires full item payload |
+| Delete item | DELETE | `/api/{category-path}/{persistentId}` | No `?force=`; used to remove the merged-away item after an items merge |
 | List keyword concepts | GET | `/api/concept-search?types=keyword&perpage=100` | ~27 pages |
 | List all concepts | GET | `/api/concept-search?perpage=100` | ~152 pages; all vocabularies |
 | Delete concept | DELETE | `/api/vocabularies/{vocab}/concepts/{code}?force=true` | Also clears historical item-version references |
@@ -498,7 +519,11 @@ All functions that communicate with the live Marketplace API. Every write functi
 | `merge_actors(keep_id, merge_ids)` | 3-step: GET all actors → PUT consolidated attributes → `POST /api/actors/{id}/merge?with={ids}` |
 | `get_item(category, persistent_id, api_url, bearer)` | `GET /api/{path}/{id}`; returns full item dict |
 | `put_item(category, persistent_id, item_data, api_url, bearer)` | `PUT /api/{path}/{id}`; logs the call |
+| `delete_item(category, persistent_id, api_url, bearer)` | `DELETE /api/{path}/{id}` (no `?force=`, unlike actors/concepts) |
 | `fix_item_keyword(category, persistent_id, old_code, new_type, new_concept, api_url, bearer)` | GET item → replace matching keyword property → PUT back |
+| `consolidate_item_payload(keep_item, merge_item)` | Unions contributors, properties, externalIds, accessibleAt, media, and relatedItems (dropping self-references) from two item records into a PUT-ready payload |
+| `repoint_related_item(category, persistent_id, old_pid, new_pid, api_url, bearer)` | GET item → swap a `relatedItems` reference from `old_pid` to `new_pid`, deduping/dropping self-references → PUT back |
+| `merge_items(keep_category, keep_pid, merge_category, merge_pid, referrers, api_url, bearer, payload=None)` | GET both → PUT `payload` (or `consolidate_item_payload`'s result if `payload` is omitted) onto keep item → repoint every referrer → DELETE merge item. The Merge Items UI always passes its own checkbox-curated `payload`. |
 | `fetch_all_keyword_concepts(api_url, bearer)` | Paginated `GET /api/concept-search?types=keyword` |
 | `fetch_all_concepts(api_url, bearer)` | Paginated `GET /api/concept-search` (all types and vocabularies) |
 | `delete_concept(concept_code, vocab_code)` | `DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true`; URL-encodes the concept code |
@@ -559,7 +584,7 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `app.py` | Login | Entry point; redirects to Data Source after login |
 | `pages/1_Data.py` | Data Source | Landing page; snapshot management with environment labels |
 | `pages/2_Actors.py` | Actors | Browse contributions; find and merge duplicates; remove orphaned actors; manually merge by ID |
-| `pages/3_Item_Duplicates.py` | Item Duplicates | Item field duplicate detection with side-by-side live comparison |
+| `pages/3_Item_Duplicates.py` | Item Duplicates | Item field duplicate detection with side-by-side live comparison; merge two items by persistentId |
 | `pages/4_URL_Checker.py` | URL Checker | Concurrent URL reachability check |
 | `pages/5_Keywords.py` | Keywords | Keyword vocabulary curation including near-duplicate merge |
 | `pages/6_Session_Log.py` | Session Log | Audit log with export |
@@ -583,7 +608,8 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `item_dup_result` | `DataFrame` | Item Duplicates | Item Duplicates (survives fetch-button reruns) |
 | `item_dup_props` | `list` | Item Duplicates | Item Duplicates |
 | `item_dup_filtered` | `int` | Item Duplicates | Count of excluded no-accessibleAt items |
-| `fetched_items` | `dict` | Item Duplicates | Live API data per duplicate group |
+| `fetched_items` | `dict` | Item Duplicates — Find Duplicates tab | Live API data per duplicate group |
+| `item_merged` | `dict` | Item Duplicates — Merge Items tab | Disables merge button after merge, keyed by category/keep/merge persistentId combination |
 | `url_check_input` | `DataFrame` | URL Checker | URL Checker |
 | `url_check_results` | `DataFrame` | URL Checker | URL Checker |
 | `keyword_vocab` | `DataFrame` | Keywords | Keywords (all tabs) |

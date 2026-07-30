@@ -20,7 +20,20 @@ Item helpers
 ------------
 get_item()                   – GET /api/{category-path}/{persistentId}
 put_item()                   – PUT (update) an item, logs the call
+delete_item()                – DELETE /api/{category-path}/{persistentId}
 fix_item_keyword()           – replace a keyword property on an item and PUT it back
+consolidate_item_payload()   – build a PUT-ready item merging attrs from two items
+repoint_related_item()       – swap a relatedItems reference on one item for another
+merge_items()                – GET both → consolidate → PUT keep → repoint referrers → DELETE merge item
+
+Note: the Marketplace API also exposes a dedicated per-category merge
+endpoint (POST /api/{category-path}/merge?with={persistentIds}, body =
+the *Core payload to apply to the survivor) plus a GET .../{id}/merge
+"preview" endpoint that computes a merge server-side. merge_items()
+deliberately does NOT use these — it fetches both full records, builds
+the consolidated payload itself, and PUTs it, so the curator gets full
+visibility into (and control over) exactly what is kept, especially for
+relatedItems, before anything is written.
 
 Concept / vocabulary helpers
 ----------------------------
@@ -363,6 +376,262 @@ def fix_item_keyword(
         return False, "Property not found in item."
 
     return put_item(category, persistent_id, item, api_url, bearer)
+
+
+def delete_item(category: str, persistent_id: str, api_url: str, bearer: str) -> tuple[bool, str]:
+    """
+    DELETE /api/{category-path}/{persistentId}.
+
+    Unlike delete_actor()/delete_concept(), item deletion has no ?force=
+    query param in the API — the endpoint either succeeds or refuses
+    (e.g. a workflow with steps still attached), and refusals surface via
+    a non-2xx status here.
+    """
+    url = _item_url(api_url, category, persistent_id)
+    try:
+        resp = requests.delete(url, headers={"Authorization": bearer}, timeout=15)
+        ok = resp.status_code in (200, 204)
+        log_api(
+            "DELETE", url,
+            f"Delete {category}/{persistent_id}",
+            status=resp.status_code,
+            response=resp.text[:300],
+            ok=ok,
+        )
+        if ok:
+            return True, f"{category}/{persistent_id} deleted."
+        return False, f"API returned {resp.status_code}: {resp.text[:200]}"
+    except requests.RequestException as e:
+        log_api("DELETE", url, f"Delete {category}/{persistent_id} — request failed",
+                status="error", response=str(e), ok=False)
+        return False, f"Request failed: {e}"
+
+
+def _dedupe_related_items(related: list[dict], exclude_persistent_ids: set) -> list[dict]:
+    """
+    Dedupe a list of relatedItems entries by (persistentId, relation code),
+    dropping any entry that points at one of `exclude_persistent_ids`
+    (used to strip self-references between the two items being merged).
+    """
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for r in related:
+        pid = r.get("persistentId")
+        if not pid or pid in exclude_persistent_ids:
+            continue
+        rel_code = (r.get("relation") or {}).get("code", "")
+        key = (pid, rel_code)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def consolidate_item_payload(keep_item: dict, merge_item: dict) -> dict:
+    """
+    Build a PUT-ready payload for `keep_item` that folds in as much data as
+    possible from `merge_item` before the latter is deleted. Returns a full
+    item dict (a copy of keep_item with fields merged in) — safe to PUT
+    directly, following the same GET-then-PUT round-trip already used by
+    fix_item_keyword().
+
+    - label: always keep item's (the curator picks which label survives by
+      choosing which item is "keep" in the UI)
+    - description / version: keep item's value; falls back to the merge
+      item's if the keep item has none
+    - contributors: union, deduped by (actor.id, role.code)
+    - properties: union, deduped by (type.code, concept.code, value) —
+      preserves keywords/concepts/free-text values from both items
+    - externalIds: union, deduped by (identifierService.code, identifier)
+    - accessibleAt: union of URLs, order preserved, deduped
+    - media: union, deduped by info.mediaId
+    - relatedItems: union of both items' relations to *other* items, deduped
+      by (persistentId, relation code); references between the keep and
+      merge item themselves are dropped (they would become a self-loop
+      once the merge item is deleted)
+    - source / sourceItemId / thumbnail: keep item's; falls back to the
+      merge item's if the keep item has none
+    """
+    merged = dict(keep_item)
+
+    for field in ("description", "version"):
+        if not merged.get(field):
+            merged[field] = merge_item.get(field, merged.get(field))
+
+    seen_contrib: set[tuple] = set()
+    contributors = []
+    for item in (keep_item, merge_item):
+        for c in item.get("contributors", []) or []:
+            key = (c.get("actor", {}).get("id"), c.get("role", {}).get("code"))
+            if key in seen_contrib:
+                continue
+            seen_contrib.add(key)
+            contributors.append(c)
+    merged["contributors"] = contributors
+
+    seen_props: set[tuple] = set()
+    properties = []
+    for item in (keep_item, merge_item):
+        for p in item.get("properties", []) or []:
+            key = (
+                p.get("type", {}).get("code"),
+                (p.get("concept") or {}).get("code"),
+                p.get("value"),
+            )
+            if key in seen_props:
+                continue
+            seen_props.add(key)
+            properties.append(p)
+    merged["properties"] = properties
+
+    seen_ext: set[tuple] = set()
+    ext_ids = []
+    for item in (keep_item, merge_item):
+        for e in item.get("externalIds", []) or []:
+            key = (e.get("identifierService", {}).get("code"), e.get("identifier"))
+            if key in seen_ext:
+                continue
+            seen_ext.add(key)
+            ext_ids.append(e)
+    merged["externalIds"] = ext_ids
+
+    seen_urls: set = set()
+    urls = []
+    for item in (keep_item, merge_item):
+        for u in item.get("accessibleAt", []) or []:
+            if u not in seen_urls:
+                seen_urls.add(u)
+                urls.append(u)
+    merged["accessibleAt"] = urls
+
+    seen_media: set = set()
+    media = []
+    for item in (keep_item, merge_item):
+        for m in item.get("media", []) or []:
+            mid = (m.get("info") or {}).get("mediaId")
+            if mid in seen_media:
+                continue
+            seen_media.add(mid)
+            media.append(m)
+    merged["media"] = media
+
+    exclude = {keep_item.get("persistentId"), merge_item.get("persistentId")}
+    related = list(keep_item.get("relatedItems", []) or []) + list(merge_item.get("relatedItems", []) or [])
+    merged["relatedItems"] = _dedupe_related_items(related, exclude)
+
+    for field in ("source", "sourceItemId", "thumbnail"):
+        if not merged.get(field):
+            merged[field] = merge_item.get(field, merged.get(field))
+
+    return merged
+
+
+def repoint_related_item(
+    category: str, persistent_id: str,
+    old_persistent_id: str, new_persistent_id: str,
+    api_url: str, bearer: str,
+) -> tuple[bool, str]:
+    """
+    GET the item, replace every relatedItems entry pointing at
+    old_persistent_id with one pointing at new_persistent_id (same
+    relation code), dedupe against any entry already pointing at
+    new_persistent_id, drop any resulting self-reference, and PUT back.
+
+    Used to keep other items' relatedItems links intact after the item
+    they used to point to has been merged away.
+    """
+    try:
+        item = get_item(category, persistent_id, api_url, bearer)
+    except Exception as e:
+        return False, f"GET failed: {e}"
+
+    related = item.get("relatedItems", []) or []
+    changed = False
+    seen: set[tuple] = set()
+    new_related = []
+    for r in related:
+        pid = r.get("persistentId")
+        if pid == old_persistent_id:
+            pid = new_persistent_id
+            changed = True
+        rel_code = (r.get("relation") or {}).get("code", "")
+        key = (pid, rel_code)
+        if pid == persistent_id or key in seen:
+            continue  # drop self-reference or now-duplicate entry
+        seen.add(key)
+        r = dict(r)
+        r["persistentId"] = pid
+        new_related.append(r)
+
+    if not changed:
+        return False, "No relatedItems entry pointing at the merged-away item was found."
+
+    item["relatedItems"] = new_related
+    return put_item(category, persistent_id, item, api_url, bearer)
+
+
+def merge_items(
+    keep_category: str, keep_pid: str,
+    merge_category: str, merge_pid: str,
+    referrers: list[tuple[str, str]],
+    api_url: str, bearer: str,
+    payload: dict | None = None,
+) -> dict:
+    """
+    Merge merge_pid into keep_pid (both must be the same category):
+      1. GET both items
+      2. Build a consolidated payload for the keep item (consolidate_item_payload),
+         unless `payload` is already supplied
+      3. PUT the payload onto the keep item
+      4. Repoint relatedItems on every (category, persistentId) pair in
+         `referrers` from merge_pid to keep_pid
+      5. DELETE the merge item
+
+    `payload`, if given, is PUT as-is instead of the automatically
+    consolidated result — used by the Merge Items UI when the curator has
+    hand-picked which contributors/properties/external IDs/accessibleAt
+    URLs/media/relatedItems survive the merge via checkboxes.
+
+    Referrer-repointing failures are collected but do not abort the merge;
+    the merge item is only deleted once the keep item has been updated
+    successfully. Returns:
+        {"ok": bool, "message": str, "repointed": [(persistentId, ok, msg), ...]}
+    """
+    if keep_category != merge_category:
+        return {"ok": False, "message": "Items must be the same category to merge.", "repointed": []}
+
+    try:
+        keep_item = get_item(keep_category, keep_pid, api_url, bearer)
+        merge_item = get_item(merge_category, merge_pid, api_url, bearer)
+    except Exception as e:
+        return {"ok": False, "message": f"Failed to fetch items before merge: {e}", "repointed": []}
+
+    if payload is None:
+        payload = consolidate_item_payload(keep_item, merge_item)
+    ok, msg = put_item(keep_category, keep_pid, payload, api_url, bearer)
+    if not ok:
+        return {"ok": False, "message": f"Failed to update keep item: {msg}", "repointed": []}
+
+    repointed: list[tuple[str, bool, str]] = []
+    for ref_category, ref_pid in referrers:
+        r_ok, r_msg = repoint_related_item(ref_category, ref_pid, merge_pid, keep_pid, api_url, bearer)
+        repointed.append((ref_pid, r_ok, r_msg))
+
+    del_ok, del_msg = delete_item(merge_category, merge_pid, api_url, bearer)
+    if not del_ok:
+        return {
+            "ok": False,
+            "message": f"Kept item was updated, but deleting the merged-away item failed: {del_msg}",
+            "repointed": repointed,
+        }
+
+    log_action(f"Merged item {merge_category}/{merge_pid} into {keep_category}/{keep_pid}")
+    return {
+        "ok": True,
+        "message": f"Merged {merge_category}/{merge_pid} into {keep_category}/{keep_pid}.",
+        "repointed": repointed,
+    }
 
 
 def delete_concept(concept_code: str, vocab_code: str = "sshoc-keyword") -> tuple[bool, str]:
