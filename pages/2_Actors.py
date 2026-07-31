@@ -42,7 +42,7 @@ import fnmatch
 from collections import Counter
 import streamlit as st
 import pandas as pd
-from lib.auth import require_login
+from lib.auth import require_login, render_account_caption, is_moderator, current_role_label
 from lib.mplib import get_util
 from lib.api import merge_actors, delete_actor, fetch_all_actors, verify_orphans, get_actor
 from lib.snapshot import render_data_status, require_snapshot
@@ -53,7 +53,7 @@ st.set_page_config(page_title="Actors — Curation Toolkit", page_icon="👤", l
 
 env = st.session_state["env"]
 st.title("Actors")
-st.caption(f"Environment: **{env['label']}** — {env['api_url']}")
+render_account_caption(env)
 
 MP_SERVER = env["mp_url"]
 
@@ -676,10 +676,15 @@ with tab_orphans:
             f"I understand that up to {len(to_delete_orphans)} actor(s) will be permanently deleted",
             key="orphan_confirm",
         )
+        if not is_moderator():
+            st.warning(
+                f"Deleting actors requires moderator privileges — your account role "
+                f"is '{current_role_label()}'."
+            )
         if st.button(
             f"Delete {len(to_delete_orphans)} actor(s)",
             type="primary",
-            disabled=not confirmed_cb,
+            disabled=not confirmed_cb or not is_moderator(),
             key="btn_delete_orphans",
         ):
             successes, failures = [], []

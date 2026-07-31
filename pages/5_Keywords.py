@@ -37,7 +37,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import streamlit as st
 import pandas as pd
-from lib.auth import require_login
+from lib.auth import require_login, render_account_caption, is_moderator, current_role_label
 from lib.mplib import get_util
 from lib.api import fetch_all_keyword_concepts, fetch_all_concepts, delete_concept, fix_item_keyword
 from lib.snapshot import render_data_status, require_snapshot
@@ -48,7 +48,7 @@ st.set_page_config(page_title="Keywords — Curation Toolkit", page_icon="🏷�
 
 env = st.session_state["env"]
 st.title("Keyword Curation")
-st.caption(f"Environment: **{env['label']}** — {env['api_url']}")
+render_account_caption(env)
 
 require_snapshot()
 render_data_status()
@@ -212,10 +212,15 @@ with tab_unused:
                 "and any historical item-version references will be cleared",
                 key="unused_confirm",
             )
+            if not is_moderator():
+                st.warning(
+                    f"Deleting concepts requires moderator privileges — your account role "
+                    f"is '{current_role_label()}'."
+                )
             if st.button(
                 f"Delete {len(to_delete)} concept(s)",
                 type="primary",
-                disabled=not confirmed,
+                disabled=not confirmed or not is_moderator(),
                 key="btn_delete_concepts",
             ):
                 st.session_state.pop("kw_delete_status", None)
@@ -385,10 +390,15 @@ with tab_used:
                         f"{len(merge_codes)} variant(s)",
                         key=f"nd_confirm_{gi}",
                     )
+                    if not is_moderator():
+                        st.warning(
+                            f"Merging keywords requires moderator privileges (it deletes the "
+                            f"absorbed concept) — your account role is '{current_role_label()}'."
+                        )
                     if st.button(
                         f"Merge → keep '{keep_row['label']}'",
                         type="primary",
-                        disabled=not confirmed,
+                        disabled=not confirmed or not is_moderator(),
                         key=f"nd_merge_{gi}",
                     ):
                         errors, successes = [], 0

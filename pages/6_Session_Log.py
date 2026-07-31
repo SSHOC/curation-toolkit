@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 import json
 import datetime
 import streamlit as st
-from lib.auth import require_login
+from lib.auth import require_login, render_account_caption
 from lib.logger import get_log, get_log_df
 from lib.snapshot import render_data_status
 
@@ -28,7 +28,7 @@ st.set_page_config(page_title="Session Log — Curation Toolkit", page_icon="�
 
 env = st.session_state["env"]
 st.title("Session Log")
-st.caption(f"Environment: **{env['label']}** — {env['api_url']}")
+render_account_caption(env)
 
 render_data_status()
 

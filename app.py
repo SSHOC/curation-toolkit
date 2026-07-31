@@ -13,6 +13,7 @@ import streamlit as st
 from lib.auth import try_login
 from lib.environments import ENVIRONMENTS, DEFAULT_ENV
 from lib.logger import log_action
+from lib.api import get_current_user
 
 st.set_page_config(page_title="SSH MP Curation Toolkit", page_icon="🔍", layout="centered")
 
@@ -46,6 +47,14 @@ if submitted:
             st.session_state["bearer"] = token
             st.session_state["username"] = username
             st.session_state["env"] = ENVIRONMENTS[env_name]
+            try:
+                st.session_state["current_user"] = get_current_user(
+                    ENVIRONMENTS[env_name]["api_url"], token
+                )
+            except Exception:
+                # Fails closed: is_moderator() treats an unknown role as no privileges.
+                st.session_state["current_user"] = None
+                log_action("Could not fetch account role after login", ok=False)
             log_action(f"Login: {username} on {env_name} ({ENVIRONMENTS[env_name]['api_url']})")
             st.switch_page("pages/1_Data.py")
         else:

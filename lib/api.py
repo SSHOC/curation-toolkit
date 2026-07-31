@@ -41,6 +41,10 @@ fetch_all_keyword_concepts() – paginated GET /api/concept-search?types=keyword
 fetch_all_concepts()         – paginated GET /api/concept-search (all types and vocabs)
 delete_concept()             – DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true
 
+Auth / user helpers
+--------------------
+get_current_user()           – GET /api/auth/me; the logged-in account, including its role
+
 Snapshot creation
 -----------------
 create_snapshot_from_api()   – fetch all 5 item categories and save as full_items_{ts}.json
@@ -781,6 +785,23 @@ def get_actor(actor_id: int, api_url: str, bearer: str) -> dict:
     """Fetch the full actor record from GET /api/actors/{id}. Raises on error."""
     resp = requests.get(
         f"{api_url}/api/actors/{actor_id}",
+        headers={"Authorization": bearer},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_current_user(api_url: str, bearer: str) -> dict:
+    """
+    Fetch the logged-in account from GET /api/auth/me. Raises on error.
+
+    Returns a UserDto dict including `role` (one of "contributor",
+    "system-contributor", "moderator", "system-moderator", "administrator"),
+    used to gate UI actions the account doesn't have permission to perform.
+    """
+    resp = requests.get(
+        f"{api_url}/api/auth/me",
         headers={"Authorization": bearer},
         timeout=15,
     )

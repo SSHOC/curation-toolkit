@@ -19,7 +19,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import streamlit as st
-from lib.auth import require_login
+from lib.auth import require_login, current_role_label
 from lib.snapshot import (
     get_latest_snapshot_info,
     fetch_latest_from_github,
@@ -42,7 +42,7 @@ with st.container(border=True):
     col_e1, col_e2 = st.columns(2)
     col_e1.markdown(f"**Environment:** {env['label']}")
     col_e1.caption(env["api_url"])
-    col_e2.markdown(f"**Logged in as:** {username}")
+    col_e2.markdown(f"**Logged in as:** {username} ({current_role_label()})")
     col_e2.caption(env["mp_url"])
 
 st.divider()

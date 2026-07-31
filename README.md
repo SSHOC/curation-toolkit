@@ -38,7 +38,7 @@ This toolkit provides a set of purpose-built curation screens that:
 - Write changes back through the official Marketplace REST API with appropriate safeguards
 - Record every API write call and major action in an exportable session log
 
-The toolkit is intended for Marketplace **moderators and administrators**. All write operations require a valid account token and respect the API's own permission checks.
+The toolkit is intended for Marketplace **moderators and administrators**. All write operations require a valid account token and respect the API's own permission checks. On login the toolkit also fetches the account's role and automatically disables buttons the account isn't permitted to use — see [Account role detection](#login--environments).
 
 ---
 
@@ -105,6 +105,28 @@ Credentials are sent via `POST /api/auth/sign-in`. On success the `Authorization
 Navigating directly to any tool page without being logged in redirects back to the login screen.
 
 > **Recommendation**: always test changes on **Stage** first. The Stage environment is a full copy of Production and its data can be reset.
+
+### Account role detection
+
+Immediately after login the toolkit also calls `GET /api/auth/me` and stores the
+returned account (including its `role`) in `st.session_state["current_user"]`. The
+role — `contributor`, `system-contributor`, `moderator`, `system-moderator`, or
+`administrator` — is shown next to the username in the header caption on every page
+(and on the Data Source page).
+
+Buttons that delete something on the server, or merge in a way that deletes the
+losing record, are automatically disabled for accounts without at least **moderator**
+privileges, since that's what the Marketplace API itself requires for those actions —
+clicking them as a plain `contributor` account would otherwise just fail with a 403.
+A warning explaining the required role is shown above any disabled button. This
+covers: Actors → Orphaned → delete, Item Duplicates → Merge Items, and Keywords →
+delete unused concepts / near-duplicate merge. Actions that only need `contributor`
+(actor merge, plain item edits, the Keywords cross-vocab "Fix" button) are never
+gated, since any authenticated account can already perform them.
+
+If the `GET /api/auth/me` call fails for any reason, the toolkit fails closed — the
+role is treated as unknown and every moderator-gated button stays disabled until you
+log in again.
 
 ---
 
@@ -515,6 +537,7 @@ All functions that communicate with the live Marketplace API. Every write functi
 | `verify_orphans(ids, api_url, bearer, batch_size)` | Batched concurrent `GET /api/actors/{id}?items=true` with retries; returns `dict[id → bool\|None]` |
 | `delete_actor(actor_id)` | `DELETE /api/actors/{id}?force=false` |
 | `get_actor(actor_id, api_url, bearer)` | `GET /api/actors/{id}`; returns full actor record including externalIds and affiliations |
+| `get_current_user(api_url, bearer)` | `GET /api/auth/me`; returns the logged-in account including its `role`, used by `lib.auth.is_moderator()` to gate destructive buttons |
 | `_consolidate_actor_payload(actors)` | Merges email, website, and externalIds from a list of actor records; used before merge to preserve all attributes |
 | `merge_actors(keep_id, merge_ids)` | 3-step: GET all actors → PUT consolidated attributes → `POST /api/actors/{id}/merge?with={ids}` |
 | `get_item(category, persistent_id, api_url, bearer)` | `GET /api/{path}/{id}`; returns full item dict |
@@ -597,6 +620,7 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `bearer` | `str` | Login | All API calls |
 | `username` | `str` | Login | Data Source display |
 | `env` | `dict` | Login | All pages |
+| `current_user` | `dict \| None` | Login | `lib.auth.is_moderator()` / `current_role_label()` — gates destructive buttons on every page; `None` if `GET /api/auth/me` failed (fails closed) |
 | `actor_details` | `DataFrame` | Actors page | Actors (all four tabs) |
 | `actor_dup_summary` | `DataFrame` | Actors — Duplicates tab | Actors — Duplicates tab |
 | `actor_dup_full` | `DataFrame` | Actors — Duplicates tab | Actors — Duplicates tab |

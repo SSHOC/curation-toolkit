@@ -28,7 +28,7 @@ import pandas as pd
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from lib.auth import require_login
+from lib.auth import require_login, render_account_caption
 from lib.mplib import get_util
 from lib.snapshot import render_data_status, require_snapshot
 
@@ -38,7 +38,7 @@ st.set_page_config(page_title="URL Checker — Curation Toolkit", page_icon="�
 
 env = st.session_state["env"]
 st.title("URL Checker")
-st.caption(f"Environment: **{env['label']}** — {env['api_url']}")
+render_account_caption(env)
 
 MP_SERVER = env["mp_url"]
 

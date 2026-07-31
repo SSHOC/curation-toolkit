@@ -34,7 +34,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import streamlit as st
 import pandas as pd
-from lib.auth import require_login
+from lib.auth import require_login, render_account_caption, is_moderator, current_role_label
 from lib.mplib import get_util
 from lib.snapshot import render_data_status, require_snapshot
 from lib.api import get_item, merge_items, consolidate_item_payload
@@ -45,7 +45,7 @@ st.set_page_config(page_title="Item Duplicates — Curation Toolkit", page_icon=
 
 env = st.session_state["env"]
 st.title("Item Duplicates")
-st.caption(f"Environment: **{env['label']}** — {env['api_url']}")
+render_account_caption(env)
 
 MP_SERVER = env["mp_url"]
 
@@ -670,11 +670,17 @@ with tab_merge:
                     key=f"merge_confirm_{merge_key}",
                 )
 
+                if not is_moderator():
+                    st.warning(
+                        f"Merging items requires moderator privileges (it deletes the merge-away "
+                        f"item) — your account role is '{current_role_label()}'."
+                    )
+
                 if st.button(
                     f"Merge `{merge_pid}` into `{keep_pid}`",
                     type="primary",
                     key=f"merge_btn_{merge_key}",
-                    disabled=not confirmed_cb,
+                    disabled=not confirmed_cb or not is_moderator(),
                 ):
                     referrer_pairs = [(r["category"], r["persistentId"]) for r in referrers]
                     result_dict = merge_items(
