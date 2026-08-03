@@ -1,14 +1,15 @@
 """
-Session Log — view and export the record of actions taken this session.
+Session Log — view and export the record of actions taken with this
+installation.
 
 Every login, API write call (merge, delete, PUT), and major operation
-(snapshot creation, orphan verification) is appended to the in-memory
-log by lib.logger.  This page provides filtering, full-text search,
-and export as CSV or JSON.
+(snapshot creation, orphan verification) is appended to logs/session_log.jsonl
+by lib.logger.  This page provides filtering, full-text search, and export
+as CSV or JSON.
 
-The log lives in st.session_state and is lost when the server restarts
-or the browser tab is closed.  Export before ending a curation session
-if an audit trail is needed.
+The log is persistent — it survives closing the browser tab and restarting
+the app, and is shared across every session run against this installation
+(all users, all tabs). Use "Clear log" to permanently delete it.
 """
 
 import sys
@@ -19,7 +20,7 @@ import json
 import datetime
 import streamlit as st
 from lib.auth import require_login, render_account_caption
-from lib.logger import get_log, get_log_df
+from lib.logger import get_log, get_log_df, clear_log
 from lib.snapshot import render_data_status
 
 require_login()
@@ -117,5 +118,5 @@ with ec2:
 
 with ec3:
     if st.button("Clear log", type="secondary", use_container_width=True):
-        st.session_state["session_log"] = []
+        clear_log()
         st.rerun()

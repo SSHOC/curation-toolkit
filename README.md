@@ -443,7 +443,7 @@ Complete `sshoc-keyword` vocabulary with usage counts. Searchable by label or co
 
 **File:** `pages/6_Session_Log.py`
 
-Records every significant action and API write call made during the current session.
+Records every significant action and API write call made with this installation, persisted to disk (`logs/session_log.jsonl`) — it survives closing the browser and restarting the app.
 
 ![Session Log page](docs/session-log-example.png)
 
@@ -469,7 +469,7 @@ Filter by entry type (action / api), result (ok / failed), and free-text search 
 - **Export filtered as CSV** — the current filtered view
 - **Export full log as JSON** — the complete unfiltered log as a JSON array
 
-**Clear log** resets the in-session log. The log does not persist across browser sessions or server restarts.
+**Clear log** permanently deletes `logs/session_log.jsonl`. This cannot be undone — export first if you need a record. Short of that, the log persists indefinitely: across browser sessions, server restarts, and (since it's one shared file) across every session run against this installation.
 
 #### Sidebar indicator
 
@@ -585,11 +585,15 @@ All functions that communicate with the live Marketplace API. Every write functi
 
 ### `lib/logger.py`
 
-Maintains a session log in `st.session_state["session_log"]`.
+Maintains a persistent log at `logs/session_log.jsonl` (one JSON object per line), gitignored since entries can include account details and API responses.
 
 `log_action(description, ok)` — records a high-level event.
 
 `log_api(method, url, description, status, request, response, ok)` — records an HTTP API call. API error responses in standard JSON envelope format are automatically formatted into a readable summary.
+
+`get_log()` / `get_log_df()` — read the full log back (list of dicts / DataFrame).
+
+`clear_log()` — permanently deletes the log file.
 
 `get_log()` / `get_log_df()` — retrieve the current log as a list or DataFrame.
 
@@ -658,7 +662,8 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `keyword_vocab` | `DataFrame` | Keywords | Keywords (all tabs) |
 | `all_concepts_cache` | `DataFrame` | Keywords — Tab 3 | Cross-vocab comparison |
 | `kw_delete_status` | `dict` | Keywords — Tab 1 | Persists delete result across reruns |
-| `session_log` | `list[dict]` | All pages (via logger) | Session Log |
+
+> The session log itself is **not** a session_state key — it's persisted to `logs/session_log.jsonl` on disk (see [`lib/logger.py`](#libloggerpy)), independent of any browser session.
 
 ### Caching
 

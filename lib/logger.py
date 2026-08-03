@@ -1,10 +1,18 @@
 """
-Session-scoped action and API call log.
+Persistent action and API call log.
 
 Every significant operation (login, merge, delete, snapshot creation) and
-every API write call is appended to a list in st.session_state.  The log
-lives for the duration of the browser session and can be exported as CSV
-or JSON from the Session Log page.
+every API write call is appended, as one JSON line, to logs/session_log.jsonl
+next to this repo. Unlike st.session_state, this survives closing the
+browser tab and restarting the app (run.bat, streamlit run, etc.) — the log
+is a durable audit trail of everything this installation has ever done, not
+just the current browser session. It can be filtered, exported as CSV/JSON,
+or cleared from the Session Log page.
+
+Concurrent writers (multiple tabs/sessions against the same running server)
+are serialized with a module-level lock so entries never interleave/corrupt
+the file; this does not protect against two separate `streamlit run`
+processes writing at once, which isn't a scenario this desktop tool expects.
 
 Log entry columns:
   time        – ISO-8601 timestamp (seconds precision)
@@ -20,22 +28,28 @@ Log entry columns:
 
 import datetime
 import json
+import pathlib
+import threading
 import pandas as pd
-import streamlit as st
 
 _COLS = ["time", "type", "ok", "description", "method", "url", "request", "status", "response"]
 
+_LOG_DIR = pathlib.Path(__file__).parent.parent / "logs"
+_LOG_FILE = _LOG_DIR / "session_log.jsonl"
+_LOCK = threading.Lock()
 
-def _init() -> None:
-    """Ensure the session log list exists in st.session_state."""
-    if "session_log" not in st.session_state:
-        st.session_state["session_log"] = []
+
+def _append(entry: dict) -> None:
+    _LOG_DIR.mkdir(exist_ok=True)
+    line = json.dumps(entry, ensure_ascii=False)
+    with _LOCK:
+        with open(_LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
 
 def log_action(description: str, ok: bool = True) -> None:
-    """Append a high-level action entry (non-API event) to the session log."""
-    _init()
-    st.session_state["session_log"].append({
+    """Append a high-level action entry (non-API event) to the persistent log."""
+    _append({
         "time":        datetime.datetime.now().isoformat(timespec="seconds"),
         "type":        "action",
         "ok":          ok,
@@ -80,7 +94,7 @@ def log_api(
     ok: bool | None = None,
 ) -> None:
     """
-    Append an API call entry to the session log.
+    Append an API call entry to the persistent log.
 
     Parameters
     ----------
@@ -93,13 +107,12 @@ def log_api(
                 are collapsed to their "error" / "message" fields for readability).
     ok          Explicit success flag.  If None it is inferred as status < 400.
     """
-    _init()
     if ok is None:
         try:
             ok = int(status) < 400
         except (ValueError, TypeError):
             ok = False
-    st.session_state["session_log"].append({
+    _append({
         "time":        datetime.datetime.now().isoformat(timespec="seconds"),
         "type":        "api",
         "ok":          ok,
@@ -113,14 +126,34 @@ def log_api(
 
 
 def get_log() -> list[dict]:
-    """Return a copy of the full session log as a list of dicts."""
-    _init()
-    return list(st.session_state["session_log"])
+    """Return the full persistent log as a list of dicts, oldest first."""
+    if not _LOG_FILE.exists():
+        return []
+    entries = []
+    with _LOCK:
+        with open(_LOG_FILE, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # skip a corrupted line rather than fail the whole log view
+    return entries
 
 
 def get_log_df() -> pd.DataFrame:
-    """Return the session log as a DataFrame with the canonical column order."""
+    """Return the persistent log as a DataFrame with the canonical column order."""
     entries = get_log()
     if not entries:
         return pd.DataFrame(columns=_COLS)
     return pd.DataFrame(entries, columns=_COLS)
+
+
+def clear_log() -> None:
+    """Permanently delete all persisted log entries."""
+    with _LOCK:
+        if _LOG_FILE.exists():
+            _LOG_FILE.unlink()
