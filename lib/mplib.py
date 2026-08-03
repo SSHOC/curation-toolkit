@@ -1,8 +1,14 @@
 """
 Thin wrapper around the sshmarketplacelib (sshompitor) helper.
 
-The library can be either pip-installed as the `sshmarketplacelib` package
-or used directly from a sibling clone of the sshompitor repository.
+Import precedence (see vendor/NOTICE.md for why):
+1. A pip-installed `sshmarketplacelib` package, if present.
+2. A sibling `../sshompitor` clone, if present — for local development
+   against an actively-edited copy of the upstream library.
+3. The vendored copy bundled in this repo (`vendor/sshmarketplacelib/`) —
+   pinned to a known-good commit, no network access or extra download
+   required. This is the path everyone else uses, including run.bat.
+
 `get_util()` is cached with `st.cache_resource` so the snapshot is loaded
 from disk only once per Streamlit server process.
 """
@@ -14,10 +20,11 @@ import streamlit as st
 try:
     from sshmarketplacelib.helper import Util
 except ImportError:
-    # Fall back to a sibling sshompitor clone if the package is not pip-installed
     _SSHOMPITOR = pathlib.Path(__file__).parent.parent.parent / "sshompitor"
-    if str(_SSHOMPITOR) not in sys.path:
-        sys.path.insert(0, str(_SSHOMPITOR))
+    _VENDORED = pathlib.Path(__file__).parent.parent / "vendor"
+    _FALLBACK = _SSHOMPITOR if _SSHOMPITOR.is_dir() else _VENDORED
+    if str(_FALLBACK) not in sys.path:
+        sys.path.insert(0, str(_FALLBACK))
     from sshmarketplacelib.helper import Util
 
 

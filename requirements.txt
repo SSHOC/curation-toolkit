@@ -5,4 +5,10 @@ pyyaml
 pillow
 requests
 fastparquet
-https://github.com/SSHOC/sshompitor/archive/refs/heads/main.tar.gz
+
+# sshmarketplacelib is NOT installed from pip/GitHub here — it's vendored
+# at vendor/sshmarketplacelib/ (loaded by lib/mplib.py) instead. See
+# vendor/NOTICE.md for why: the upstream repo's default branch is not a
+# stable install target (unpinned installs are not reproducible, and the
+# repo bundles several GB of unrelated generated data alongside the
+# ~100 KB library code, which pip would otherwise have to download in full).
