@@ -8,22 +8,23 @@ A local Streamlit web application for curating the [SSH Open Marketplace](https:
 
 1. [Overview](#overview)
 2. [Prerequisites](#prerequisites)
-3. [Setup](#setup)
-4. [Running the app](#running-the-app)
-5. [Login & environments](#login--environments)
-6. [Tool reference](#tool-reference)
+3. [Windows quick-start (no Python required)](#windows-quick-start-no-python-required)
+4. [Setup](#setup)
+5. [Running the app](#running-the-app)
+6. [Login & environments](#login--environments)
+7. [Tool reference](#tool-reference)
    - [Data Source](#data-source)
    - [Actors](#actors)
    - [Item Duplicates](#item-duplicates)
    - [URL Checker](#url-checker)
    - [Keywords](#keywords)
    - [Session Log](#session-log)
-7. [Data freshness](#data-freshness)
-8. [API reference](#api-reference)
-9. [Library reference](#library-reference)
-10. [Architecture](#architecture)
-11. [Caveats & known limitations](#caveats--known-limitations)
-12. [Troubleshooting](#troubleshooting)
+8. [Data freshness](#data-freshness)
+9. [API reference](#api-reference)
+10. [Library reference](#library-reference)
+11. [Architecture](#architecture)
+12. [Caveats & known limitations](#caveats--known-limitations)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -49,11 +50,29 @@ The toolkit is intended for Marketplace **moderators and administrators**. All w
 | Python 3.10+ | Tested on 3.10–3.12 |
 | Marketplace account | Moderator or administrator role required for write operations |
 
-No local clone of sshompitor is required. The `sshmarketplacelib` Python package is installed directly from GitHub as part of the normal dependency install, and a bundled `config.yaml` provides the configuration it needs. Snapshot data is downloaded on first use from the Data Source page.
+No local clone of sshompitor is required. The `sshmarketplacelib` Python package is installed directly from GitHub as part of the normal dependency install (a plain HTTPS download — no `git` executable needed), and a bundled `config.yaml` provides the configuration it needs. Snapshot data is downloaded on first use from the Data Source page.
+
+> **On Windows and don't want to install Python yourself?** See [Windows quick-start](#windows-quick-start-no-python-required) below — `run.bat` sets everything up for you.
+
+---
+
+## Windows quick-start (no Python required)
+
+For a Windows machine with no Python (or any other dependency) installed: double-click **`run.bat`** in the project folder.
+
+The first run downloads a private, self-contained copy of Python into a `python-embed` folder next to the script and installs the app's dependencies into it — this takes a few minutes and needs an internet connection. Every run after that just starts the app in a few seconds. A browser tab opens automatically once it's ready.
+
+This doesn't touch any Python already installed on the machine, and doesn't require Git. If something goes wrong partway through setup, just re-run `run.bat` — or delete the `python-embed` folder first for a completely clean reinstall.
+
+Two things to expect on first run, both normal:
+- **Windows Defender SmartScreen** may flag the download as from an "unrecognized publisher" — click "More info → Run anyway".
+- **Windows Firewall** may ask for permission when the local web server starts — click "Allow".
 
 ---
 
 ## Setup
+
+_(Skip this section if you used `run.bat` above.)_
 
 ### 1. Install dependencies
 

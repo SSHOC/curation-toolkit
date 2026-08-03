@@ -1,0 +1,8 @@
+# Project-level Streamlit config.
+#
+# gatherUsageStats = false skips the interactive "Welcome to Streamlit /
+# email (optional)" prompt that otherwise appears on first launch — without
+# this, a double-clicked run.bat on a colleague's machine would hang waiting
+# for input on a terminal she isn't watching.
+[browser]
+gatherUsageStats = false

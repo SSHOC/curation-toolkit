@@ -5,4 +5,4 @@ pyyaml
 pillow
 requests
 fastparquet
-git+https://github.com/SSHOC/sshompitor.git#egg=sshmarketplacelib
+https://github.com/SSHOC/sshompitor/archive/refs/heads/main.tar.gz
