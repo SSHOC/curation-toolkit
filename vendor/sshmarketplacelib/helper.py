@@ -85,7 +85,7 @@ class Util(object):
 
         #print (dataset['tempurl'])
         if 'MPUrl' in dataset.columns:
-            dataset=dataset.drop(columns="MPUrl", axis=1)
+            dataset=dataset.drop(columns="MPUrl")
 
         if 'persistentId' in dataset.columns:
             dataset.insert(0, 'MPUrl', dataset.tempurl+dataset['persistentId'])
@@ -94,7 +94,7 @@ class Util(object):
                 dataset.insert(0, 'MPUrl', 'actors/'+dataset.tempurl)
 
         if 'tempurl' in dataset.columns:
-            dataset=dataset.drop(columns='tempurl',axis=1)
+            dataset=dataset.drop(columns='tempurl')
         return dataset
 
     def _load_snapshot(self):
@@ -488,7 +488,7 @@ class Util(object):
         tmp_ex=df_tmpduplicated.explode('Id')
         test_te=tmp_ex[['Id', 'isDuplicated']]
         test_res=pd.merge(left=test_te, right=testdup, left_on='Id', right_on='id')
-        test_res=test_res.drop(columns='Id',axis=1)
+        test_res=test_res.drop(columns='Id')
         test_res['item']=test_res.category+'/'+test_res.persistentId
         test_set=test_res.groupby(['MPUrl', 'id', 'name'])['item'].apply(list).reset_index(name='itemPersistentId')
         return test_res, test_set.sort_values('name')
@@ -551,7 +551,7 @@ class Util(object):
             df_items=df_items[df_items_mask.any(axis=1)]
         df_items['tempurl'] = df_items['category'].apply(lambda y: y+'/' if len(y)>0 else y)
         df_items['MPUrl']=df_items['tempurl']+df_items['persistentId']
-        df_items=df_items.drop(columns='tempurl',axis=1)
+        df_items=df_items.drop(columns='tempurl')
         return df_items
 
     #rendering functions

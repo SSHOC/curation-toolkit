@@ -1,10 +1,19 @@
-streamlit>=1.35
-pandas
-numpy
-pyyaml
-pillow
-requests
-fastparquet
+# Pinned to exact tested versions rather than left open. Unpinned deps
+# already caused two separate reproducibility bugs on a fresh install
+# (sshmarketplacelib picking up an unrelated upstream commit, then pandas
+# 3.0 breaking a `drop(columns=..., axis=1)` call that had always worked
+# on 2.x) — "pip install -r requirements.txt" must get the same code today
+# as it did when this was tested, not whatever is newest on install day.
+# To upgrade deliberately: bump versions here, then re-run the full app
+# (all pages, Actors duplicates/merge in particular) against real snapshot
+# data before committing the bump.
+streamlit==1.60.0
+pandas==2.3.3
+numpy==2.5.1
+pyyaml==6.0.3
+pillow==12.3.0
+requests==2.34.2
+fastparquet==2026.5.0
 
 # sshmarketplacelib is NOT installed from pip/GitHub here — it's vendored
 # at vendor/sshmarketplacelib/ (loaded by lib/mplib.py) instead. See

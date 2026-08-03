@@ -198,7 +198,7 @@ class URLCheck(object):
         #create MPUrl
         df_list_of_url_status['tempurl'] = df_list_of_url_status['category'].apply(lambda y: y+'/' if len(y)>0 else y)
         df_list_of_url_status['MPUrl']=df_list_of_url_status['tempurl']+df_list_of_url_status['persistentId']
-        df_list_of_url_status=df_list_of_url_status.drop(columns='tempurl',axis=1)
+        df_list_of_url_status=df_list_of_url_status.drop(columns='tempurl')
         return df_list_of_url_status[['MPUrl','persistentId', 'category', 'label', 'property','url', 'status']];
     
     
@@ -298,7 +298,7 @@ class URLCheck(object):
         #create MPUrl
         df_list_of_url_status['tempurl'] = df_list_of_url_status['category'].apply(lambda y: y+'/' if len(y)>0 else y)
         df_list_of_url_status['MPUrl']=df_list_of_url_status['tempurl']+df_list_of_url_status['persistentId']
-        df_list_of_url_status=df_list_of_url_status.drop(columns='tempurl',axis=1)
+        df_list_of_url_status=df_list_of_url_status.drop(columns='tempurl')
         return df_list_of_url_status[['MPUrl','persistentId', 'category', 'label', 'property','url', 'status']];
         
         
