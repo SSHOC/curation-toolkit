@@ -39,6 +39,7 @@ Concept / vocabulary helpers
 ----------------------------
 fetch_all_keyword_concepts() – paginated GET /api/concept-search?types=keyword
 fetch_all_concepts()         – paginated GET /api/concept-search (all types and vocabs)
+get_concept()                – GET /api/vocabularies/{vocab}/concepts/{code}; single concept by code, or None if absent
 delete_concept()             – DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true
 
 Auth / user helpers
@@ -636,6 +637,27 @@ def merge_items(
         "message": f"Merged {merge_category}/{merge_pid} into {keep_category}/{keep_pid}.",
         "repointed": repointed,
     }
+
+
+def get_concept(vocab_code: str, concept_code: str, api_url: str, bearer: str) -> dict | None:
+    """
+    GET /api/vocabularies/{vocab_code}/concepts/{concept_code} — the full concept
+    record (code, label, uri, vocabulary, notation, candidate) as the API itself
+    returns it, suitable for reuse as-is in a property's `concept` field when
+    building a PUT payload (same idea as the new_concept dict built from
+    fetch_all_concepts()/fetch_all_keyword_concepts() rows for fix_item_keyword()).
+
+    Returns None if the vocabulary has no concept with that code (HTTP 404).
+    No auth is actually required for reads, but bearer is passed for consistency
+    with the rest of this module.
+    """
+    from urllib.parse import quote
+    url = f"{api_url}/api/vocabularies/{vocab_code}/concepts/{quote(concept_code, safe='')}"
+    resp = requests.get(url, headers={"Authorization": bearer}, timeout=15)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
 
 
 def delete_concept(concept_code: str, vocab_code: str = "sshoc-keyword") -> tuple[bool, str]:

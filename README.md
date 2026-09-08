@@ -2,6 +2,8 @@
 
 A local Streamlit web application for curating the [SSH Open Marketplace](https://marketplace.sshopencloud.eu/) (SSHOMP). It reads data from a local [sshompitor](https://github.com/SSHOC/sshompitor) snapshot for fast offline analysis and writes back to the live Marketplace API for any changes.
 
+See [CHANGELOG.md](CHANGELOG.md) for notable changes.
+
 ---
 
 ## Contents
@@ -17,6 +19,7 @@ A local Streamlit web application for curating the [SSH Open Marketplace](https:
    - [Actors](#actors)
    - [Item Duplicates](#item-duplicates)
    - [URL Checker](#url-checker)
+   - [OpenAIRE Enrichment](#openaire-enrichment)
    - [Keywords](#keywords)
    - [Session Log](#session-log)
 8. [Data freshness](#data-freshness)
@@ -347,6 +350,27 @@ Sorted by items with the most broken links first, then by item, then broken-befo
 
 ---
 
+### OpenAIRE Enrichment
+
+**File:** `pages/6_OpenAIRE_Enrichment.py`
+
+Finds items that carry a DOI and backfills metadata fields that are missing on the Marketplace side but already on file at [OpenAIRE](https://graph.openaire.eu/) for that DOI.
+
+**Scope.** Only genuinely missing fields are ever proposed — existing curator-entered values are never shown as conflicting or overwritten. Five fields are covered: `year`, `publisher`, `language`, `keyword`, `accessibleAt`. License is out of scope (the Marketplace `license` property uses a closed SPDX-style vocabulary that OpenAIRE's free-text license strings, e.g. "CC BY", don't map onto cleanly) and so are authors/contributors (matching OpenAIRE authors to Marketplace Actors risks creating duplicates — actor deduplication is already handled by the Actors page).
+
+#### Workflow
+
+1. Select categories, optionally paste an OpenAIRE personal access token, then click **Extract DOI items from snapshot**. Scans the snapshot for items with a `doi` external ID (URL-form DOIs like `https://doi.org/10.…` are normalized to the bare DOI).
+2. Click **Look up N DOIs on OpenAIRE**. Each DOI is queried against `GET https://api.openaire.eu/graph/v3/research-products?pid={doi}` — an exact-DOI match, so there is no fuzzy-matching risk. Lookups are cached to `data/openaire_cache.json` (gitignored) for 30 days so re-runs don't re-spend rate-limit budget on DOIs already checked. The same click also loads the full `sshoc-keyword` vocabulary (reusing the Keywords page's cache if already loaded) and resolves every distinct language code the lookups returned, via `get_concept()` — both are needed to know which proposals are actually applicable (see below).
+3. Review results, grouped by **With proposals** / **Applied** / **Found, nothing missing** / **Not found on OpenAIRE** / **Lookup errors**. Each item with a proposal shows the OpenAIRE record's title (to sanity-check the match) and one checkbox per proposed field. A `language` or `keyword` value from OpenAIRE is only ever proposed when it resolves to a concept that **already exists** in the corresponding Marketplace vocabulary (`iso-639-3` by exact code; `sshoc-keyword` by case-insensitive label) — nothing new is created in either vocabulary, so an OpenAIRE subject/language with no existing match is silently dropped rather than proposed.
+4. **Apply** — one item at a time, via its own **Apply to this item** button; there is no bulk "apply all" action, since a wrong guess written to many items at once is far more costly than the same guess on one. GETs the live item, appends the checked properties, and PUTs it back — the same round trip `fix_item_keyword()` uses — so every write is logged to the Session Log. A successful apply moves the item out of **With proposals** into its own **Applied** bucket immediately (metric, filter, CSV column) — no page navigation needed to confirm it took effect. A failed attempt stays listed, auto-expanded with the error shown, so it can be corrected and retried.
+
+#### Rate limits
+
+OpenAIRE's public API caps unauthenticated requests at 60/hour; a personal access token (from the [OpenAIRE developer portal](https://graph.openaire.eu/docs/apis/authentication)) raises that to 7200/hour. The token is entered per-session (like the Marketplace login) and is never written to disk. Requests are throttled client-side to stay under whichever cap applies, regardless of the configured worker count.
+
+---
+
 ### Keywords
 
 **File:** `pages/5_Keywords.py`
@@ -441,7 +465,7 @@ Complete `sshoc-keyword` vocabulary with usage counts. Searchable by label or co
 
 ### Session Log
 
-**File:** `pages/6_Session_Log.py`
+**File:** `pages/7_Session_Log.py`
 
 Records every significant action and API write call made with this installation, persisted to disk (`logs/session_log.jsonl`) — it survives closing the browser and restarting the app.
 
@@ -510,6 +534,7 @@ All write operations target the environment selected at login.
 | Delete item | DELETE | `/api/{category-path}/{persistentId}` | No `?force=`; used to remove the merged-away item after an items merge |
 | List keyword concepts | GET | `/api/concept-search?types=keyword&perpage=100` | ~27 pages |
 | List all concepts | GET | `/api/concept-search?perpage=100` | ~152 pages; all vocabularies |
+| Get concept | GET | `/api/vocabularies/{vocab}/concepts/{code}` | Single concept by code; 404 if absent from that vocabulary |
 | Delete concept | DELETE | `/api/vocabularies/{vocab}/concepts/{code}?force=true` | Also clears historical item-version references |
 | Fetch category items | GET | `/api/{category-path}?perpage=20&page={n}` | Used when creating a fresh snapshot; small pages reduce per-request timeouts |
 
@@ -568,8 +593,19 @@ All functions that communicate with the live Marketplace API. Every write functi
 | `merge_items(keep_category, keep_pid, merge_category, merge_pid, referrers, api_url, bearer, payload=None)` | GET both → PUT `payload` (or `consolidate_item_payload`'s result if `payload` is omitted) onto keep item → repoint every referrer → DELETE merge item. The Merge Items UI always passes its own checkbox-curated `payload`. |
 | `fetch_all_keyword_concepts(api_url, bearer)` | Paginated `GET /api/concept-search?types=keyword` |
 | `fetch_all_concepts(api_url, bearer)` | Paginated `GET /api/concept-search` (all types and vocabularies) |
+| `get_concept(vocab_code, concept_code, api_url, bearer)` | `GET /api/vocabularies/{vocab}/concepts/{code}`; the full concept record, or `None` on 404 |
 | `delete_concept(concept_code, vocab_code)` | `DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true`; URL-encodes the concept code |
 | `create_snapshot_from_api(api_url, bearer, data_dir, env_label)` | Fetches all items from all 5 categories, saves `full_items_{ts}.json` and a sidecar `full_items_{ts}.meta.json` |
+
+### `lib/openaire.py`
+
+Client for the [OpenAIRE Graph API](https://graph.openaire.eu/docs/apis/graph-api/overview/), used only by the OpenAIRE Enrichment page. Talks to a third-party service, not the Marketplace API — no `log_api()` calls.
+
+| Function | Description |
+|---|---|
+| `normalize_doi(raw)` | Strips a `doi.org` URL or `doi:` prefix, returning the bare DOI |
+| `fetch_one(doi, token, timeout, retries)` | Single-DOI lookup (`GET .../research-products?pid={doi}`) with retry/backoff and `429` (rate limit) handling; returns `{"status": "found", "fields": {...}}`, `{"status": "not_found"}`, or `{"status": "error", "message": str}` |
+| `fetch_many(dois, token, workers, timeout, use_cache)` | Concurrent batch lookup, throttled to 60/hour (unauthenticated) or 7200/hour (with a personal access token) via a shared rate limiter; checks/updates the on-disk cache at `data/openaire_cache.json` (30-day TTL, `found`/`not_found` results only — `error` results are always retried) |
 
 ### `lib/snapshot.py`
 
@@ -616,11 +652,13 @@ sshmarketplacelib.Util  (loaded once, cached via st.cache_resource)
         ├── _load_snapshot()             ──►  3_Item_Duplicates, 4_URL_Checker
         ├── getDuplicates()              ──►  3_Item_Duplicates
         ├── getDuplicatedActorsWithItems ──►  2_Actors (Duplicates tab)
-        └── getAllProperties()           ──►  5_Keywords
+        ├── getAllProperties()           ──►  5_Keywords
+        └── externalIds (doi) scan       ──►  6_OpenAIRE_Enrichment  ◄──►  lib/openaire.py  ◄──►  Live OpenAIRE Graph API
+                                                                                                     (results cached to data/openaire_cache.json)
 
 Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operations + read-back for side-by-side compare
                                   │
-                                  └── lib/logger.py  ──►  6_Session_Log
+                                  └── lib/logger.py  ──►  7_Session_Log
 ```
 
 ### Page structure
@@ -633,7 +671,8 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `pages/3_Item_Duplicates.py` | Item Duplicates | Item field duplicate detection with side-by-side live comparison; merge two items by persistentId |
 | `pages/4_URL_Checker.py` | URL Checker | Concurrent URL reachability check |
 | `pages/5_Keywords.py` | Keywords | Keyword vocabulary curation including near-duplicate merge |
-| `pages/6_Session_Log.py` | Session Log | Audit log with export |
+| `pages/6_OpenAIRE_Enrichment.py` | OpenAIRE Enrichment | Find DOI-bearing items and backfill missing metadata from OpenAIRE |
+| `pages/7_Session_Log.py` | Session Log | Audit log with export |
 
 ### Session state
 
@@ -662,6 +701,9 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `keyword_vocab` | `DataFrame` | Keywords | Keywords (all tabs) |
 | `all_concepts_cache` | `DataFrame` | Keywords — Tab 3 | Cross-vocab comparison |
 | `kw_delete_status` | `dict` | Keywords — Tab 1 | Persists delete result across reruns |
+| `openaire_doi_items` | `DataFrame` | OpenAIRE Enrichment | OpenAIRE Enrichment (survives lookup-button reruns) |
+| `openaire_lookup` | `dict` | OpenAIRE Enrichment | `doi → fetch_one()`-shaped result, keyed by DOI |
+| `openaire_apply_status` | `dict` | OpenAIRE Enrichment | `persistentId → (ok, message)` from Apply actions, persists across reruns |
 
 > The session log itself is **not** a session_state key — it's persisted to `logs/session_log.jsonl` on disk (see [`lib/logger.py`](#libloggerpy)), independent of any browser session.
 
@@ -689,6 +731,10 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 **`force=false` on actor deletion.** The API refuses to delete an actor that is the affiliation target of another actor. Such actors must have their affiliation relationship removed first, or be merged into the affiliated actor.
 
 **Item PUT requires full payload.** Every item update sends the complete object returned by GET with only the target fields modified. Fields absent from the GET response will be absent from the PUT and may be cleared server-side.
+
+**OpenAIRE Enrichment never invents vocabulary entries.** New `language`/`keyword` properties always carry a complete, already-existing concept record — language resolved by exact ISO 639-3 code via `get_concept()`, keywords matched by case-insensitive label against the loaded `sshoc-keyword` vocabulary (same rule as the Keywords page's cross-vocab matching). A code or label with no existing match is simply not proposed, rather than creating a new candidate concept. `year`/`publisher` are plain value properties (`{type: {code}, value}`). Live-verified against the OpenAIRE and Marketplace APIs; if a property still fails to apply, the error message from the PUT response is shown directly rather than silently swallowed.
+
+**OpenAIRE metadata is third-party and harvest-lagged.** A "not found" result only means OpenAIRE had no record for that DOI *at lookup time* — newly-minted DOIs can take time to be harvested. Cached not-found results are re-checked after 30 days for this reason.
 
 ---
 
