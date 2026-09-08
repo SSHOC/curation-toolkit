@@ -31,7 +31,7 @@ See [CHANGELOG.md](CHANGELOG.md) for notable changes.
 
 ---
 
-## Overview
+## Overview 
 
 The SSH Open Marketplace accumulates data quality issues over time: duplicate actors, broken access URLs, orphaned entries, and keywords that duplicate concepts already defined in controlled vocabularies. These issues are difficult to spot and fix through the standard Marketplace web interface.
 
