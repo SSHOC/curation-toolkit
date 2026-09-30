@@ -456,7 +456,11 @@ if doi_df is not None and not doi_df.empty and lookup is not None:
                 f"{r['label']} — {r['n_proposed']} field(s) proposed" + (" — ❌ last attempt failed" if failed else ""),
                 expanded=failed,
             ):
-                st.caption(f"{r['category']} / {pid}  ·  DOI: [{r['doi']}](https://doi.org/{r['doi']})")
+                st.caption(
+                    f"{r['category']} / {pid}  ·  "
+                    f"[MP entry]({MP_SERVER}{r['category']}/{pid})  ·  "
+                    f"DOI: [{r['doi']}](https://doi.org/{r['doi']})"
+                )
                 if r["openaire_title"]:
                     st.caption(f"OpenAIRE title: _{r['openaire_title']}_")
 
