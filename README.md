@@ -299,7 +299,7 @@ Results persist in session state while navigating the page.
 
 ##### Summary table
 
-Shows matched items with label, category, persistentId, and a clickable link to each item in the Marketplace. Downloadable as CSV.
+Shows matched items with label, category, persistentId, **source** (the harvester/system the item came from, e.g. `CLARIN Resource Families`; items added directly through the MP editor show `(no source — manually added)` instead of a blank cell), and a clickable link to each item in the Marketplace. Seeing the source for each row in a duplicate group is often the deciding factor for which one to keep — e.g. two rows for the same item where one has no source and the other was harvested usually means the harvested one should survive. Downloadable as CSV.
 
 ##### Side-by-side comparison
 
@@ -311,7 +311,7 @@ Below the summary table each duplicate group appears as a collapsible expander. 
 
 Merges two items of the **same category** by `persistentId` (found via name lookup — typing an ID shows the matching snapshot label right below the field — or copied over from the Find Duplicates tab). Workflow steps are not supported — merge the parent workflow instead.
 
-The Marketplace API has a dedicated per-category merge endpoint (`POST /api/{category-path}/merge?with={ids}`), but this tool deliberately does **not** use it. Instead it:
+The Marketplace API has a dedicated per-category merge endpoint (`POST /api/{category-path}/merge?with={ids}`), but this tool's **default** behavior deliberately does **not** use it — see [Native merge endpoint toggle](#native-merge-endpoint-toggle) below for why. Instead it:
 
 1. `GET`s both full item records and shows a **Keep vs. merge away** identity comparison (label, status, source, version, description, Marketplace link).
 2. Shows a **"Choose what to keep"** section: for each of `contributors`, `properties` (keyword/concept/free-text values), `externalIds`, `accessibleAt` URLs, and `media`, a side-by-side pair of columns — :green[green, left] = already on the kept item, :blue[blue, right] = would be added from the merge-away item — each entry with its own checkbox, all checked by default (a full union). A value present on both items is shown once, on the green/keep side. Uncheck anything that shouldn't survive the merge. `relatedItems` get the same treatment, except any relation between the keep and merge item themselves is dropped before it's even shown (it would otherwise become a dangling self-reference once the merge item is deleted).
@@ -322,6 +322,16 @@ The Marketplace API has a dedicated per-category merge endpoint (`POST /api/{cat
 > **Warning shown in the UI:** if either item came from an automated harvest/ingest (check its `source` field), a future harvest run may re-create the item that was just merged away, since the toolkit has no way to tell an external harvester the two records were the same. If a duplicate keeps reappearing, fix the source feed rather than re-merging it every time.
 
 The confirmation checkbox and merge button are scoped to the specific (category, keep ID, merge ID) combination, and — like the Actors Manual Merge tab — once a merge succeeds the tool shows the stored success message instead of re-fetching the now-deleted item on rerun.
+
+##### Native merge endpoint toggle
+
+A checkbox, **"Use the Marketplace's native merge endpoint instead"**, switches a single merge operation over to `POST /api/{category-path}/merge?with={ids}`. Its behavior was undocumented beyond the OpenAPI shape and easy to misread as "absorb the merge-away item into the keep item" (the way actor merging works) — it was investigated empirically against Stage (2026-10-09) before this toggle was added, by creating disposable test items, merging them, and inspecting the result:
+
+- **Every persistentId passed in `with` is hard-deleted — including the one you chose to "keep."** The request body becomes the content of a **brand-new item with a freshly minted persistentId**. There is no way to tell the API "preserve this identity"; confirmed with both one- and two-item `with` lists.
+- The Marketplace serves **no redirect** from a retired persistentId, so this breaks every existing link/citation to **either** merged item, not just the discarded one — the default flow above only ever invalidates the merge-away item's URL.
+- In exchange, the API repoints `relatedItems` on every *other* item referencing either merged id **server-side, against live data** — confirmed via a live referrer item in the same investigation. This is more thorough than `repoint_related_item()`, which only catches referrers already present in the local snapshot.
+
+Because of the persistentId loss, this is opt-in per merge, never a default, and the UI adjusts its confirmation text, warning, and button label accordingly when checked. Use it only when neither item's persistentId needs to stay stable (see `lib.api._merge_items_native()` and the `use_native` parameter on `merge_items()`).
 
 ---
 
@@ -356,14 +366,20 @@ Sorted by items with the most broken links first, then by item, then broken-befo
 
 Finds items that carry a DOI and backfills metadata fields that are missing on the Marketplace side but already on file at [OpenAIRE](https://graph.openaire.eu/) for that DOI.
 
-**Scope.** Only genuinely missing fields are ever proposed — existing curator-entered values are never shown as conflicting or overwritten. Five fields are covered: `year`, `publisher`, `language`, `keyword`, `accessibleAt`. License is out of scope (the Marketplace `license` property uses a closed SPDX-style vocabulary that OpenAIRE's free-text license strings, e.g. "CC BY", don't map onto cleanly) and so are authors/contributors (matching OpenAIRE authors to Marketplace Actors risks creating duplicates — actor deduplication is already handled by the Actors page).
+**Scope.** Only genuinely missing fields are ever proposed — existing curator-entered values are never shown as conflicting or overwritten. Fields covered: `year`, `publisher`, `language`, `discipline`, `standard`, `activity`, `keyword`, `accessibleAt`. License is out of scope (the Marketplace `license` property uses a closed SPDX-style vocabulary that OpenAIRE's free-text license strings, e.g. "CC BY", don't map onto cleanly) and so are authors/contributors (matching OpenAIRE authors to Marketplace Actors risks creating duplicates — actor deduplication is already handled by the Actors page).
+
+**Closed vocabularies first, keyword as a last resort.** `keyword` is the *only* concept-valued Marketplace property with an open vocabulary — every other one (`language`, `discipline`, `standard`, `activity`, `license`, ...) is closed. This page always tries to place an OpenAIRE value into the closed vocabulary it actually belongs to before ever falling back to the generic, open `keyword` property:
+- OpenAIRE's `FOS` (Field of Science) subjects (e.g. `"0601 history and archaeology"`) go to `discipline` — verified live that this is the same OECD/ÖFOS classification scheme the Marketplace's own closed discipline vocabulary uses, so the leading code (leading zeros stripped: `"0601"` → `"601"`) is looked up directly, e.g. code `601` → "History, Archaeology". These were previously discarded entirely.
+- OpenAIRE's `keyword`-scheme subjects (free-text topics) are matched, by case-insensitive label, against **`standard`** first, then **`activity`** (the `tadirah2` research-methods vocabulary), and only what's left over is checked against the open **`sshoc-keyword`** vocabulary. A subject matching nowhere is simply dropped, never added as a new keyword. Vocabularies describing the *resource itself* rather than its subject matter (`resource-category`, `intended-audience`, `geographical-availability`, formats, life-cycle/readiness status) are deliberately excluded from this matching — a topic a paper discusses isn't reliable evidence of what audience/category/format the Marketplace item itself has.
+
+**Field mapping.** An expander at the top of the page, **"How OpenAIRE fields map to Marketplace fields"**, lays out the full mapping above as a table. Every proposal checkbox in the review list also carries a tooltip (hover the **?**) restating the relevant rule against the item's actual value, e.g. *"OpenAIRE reported ISO 639-3 code 'eng', resolved to the existing Marketplace concept 'English'…"* or *"Matched an existing activity concept… ahead of the open keyword vocabulary"* — so a curator can see how a value was derived without leaving the checkbox.
 
 #### Workflow
 
 1. Select categories, optionally paste an OpenAIRE personal access token, then click **Extract DOI items from snapshot**. Scans the snapshot for items with a `doi` external ID (URL-form DOIs like `https://doi.org/10.…` are normalized to the bare DOI).
-2. Click **Look up N DOIs on OpenAIRE**. Each DOI is queried against `GET https://api.openaire.eu/graph/v3/research-products?pid={doi}` — an exact-DOI match, so there is no fuzzy-matching risk. Lookups are cached to `data/openaire_cache.json` (gitignored) for 30 days so re-runs don't re-spend rate-limit budget on DOIs already checked. The same click also loads the full `sshoc-keyword` vocabulary (reusing the Keywords page's cache if already loaded) and resolves every distinct language code the lookups returned, via `get_concept()` — both are needed to know which proposals are actually applicable (see below).
-3. Review results, grouped by **With proposals** / **Applied** / **Found, nothing missing** / **Not found on OpenAIRE** / **Lookup errors**. Each item with a proposal shows the OpenAIRE record's title (to sanity-check the match) and one checkbox per proposed field. A `language` or `keyword` value from OpenAIRE is only ever proposed when it resolves to a concept that **already exists** in the corresponding Marketplace vocabulary (`iso-639-3` by exact code; `sshoc-keyword` by case-insensitive label) — nothing new is created in either vocabulary, so an OpenAIRE subject/language with no existing match is silently dropped rather than proposed.
-4. **Apply** — one item at a time, via its own **Apply to this item** button; there is no bulk "apply all" action, since a wrong guess written to many items at once is far more costly than the same guess on one. GETs the live item, appends the checked properties, and PUTs it back — the same round trip `fix_item_keyword()` uses — so every write is logged to the Session Log. A successful apply moves the item out of **With proposals** into its own **Applied** bucket immediately (metric, filter, CSV column) — no page navigation needed to confirm it took effect. A failed attempt stays listed, auto-expanded with the error shown, so it can be corrected and retried.
+2. Click **Look up N DOIs on OpenAIRE**. Each DOI is queried against `GET https://api.openaire.eu/graph/v3/research-products?pid={doi}` — an exact-DOI match, so there is no fuzzy-matching risk. Lookups are cached to `data/openaire_cache.json` (gitignored) for 30 days so re-runs don't re-spend rate-limit budget on DOIs already checked. The same click also loads the closed `standard` and `activity` vocabularies and the open `sshoc-keyword` vocabulary (reusing the Keywords page's cache if already loaded), and resolves every distinct language code and discipline (FOS) code the lookups returned via `get_concept()` — all needed to know which proposals are actually applicable (see above).
+3. Review results, grouped by **With proposals** / **Applied** / **Found, nothing missing** / **Not found on OpenAIRE** / **Lookup errors**. Each item with a proposal shows a **"View on OpenAIRE"** link (`explore.openaire.eu/search/result?pid={doi}`, alongside the DOI link, which goes to the publisher, not OpenAIRE), an **"OpenAIRE response for this DOI"** expander with a readable summary (title, publication date, publisher, language, and — grouped separately — every `FOS` and `keyword` subject OpenAIRE reported, including ones that didn't map to any proposal and so would otherwise be invisible) plus a nested **"Raw JSON response"** with the complete, unprocessed API record, and one checkbox per proposed field. A concept-valued field from OpenAIRE is only ever proposed when it resolves to a concept that **already exists** in the corresponding Marketplace vocabulary — nothing new is created in any vocabulary, so a value with no existing match is silently dropped from the checkboxes (but still visible in the response expander).
+4. **Apply** — one item at a time, via its own **Apply to this item** button; there is no bulk "apply all" action, since a wrong guess written to many items at once is far more costly than the same guess on one. GETs the live item, appends the checked properties, and PUTs it back — the same round trip `fix_item_keyword()` uses — so every write is logged to the Session Log. A successful apply **stays in place in the review list** — same position, not removed — with its expander collapsed, marked **✅ applied**, and showing a read-only summary of what was added, so a curator working down the list doesn't lose their place or need to switch filters to confirm it took effect. (It also moves out of **With proposals** into **Applied** in the summary metrics/filter/CSV above.) A failed attempt stays expanded and interactive, with the error shown, so it can be corrected and retried.
 
 #### Rate limits
 
@@ -480,13 +496,15 @@ Records every significant action and API write call made with this installation,
 
 Every API write entry records: timestamp, HTTP method, full URL, request summary, HTTP status code, and an abbreviated response. API error responses in the standard JSON envelope (`{"status": 403, "error": "Forbidden", "path": "…"}`) are automatically collapsed to a readable `Forbidden — path: /api/…` form in the Response column.
 
+Every entry also carries a **Source** — which page/feature triggered it, in plain terms, e.g. `OpenAIRE Enrichment: added year: 2020, publisher: DIGITAL.CSIC to 'SimilArITI'` or `Keywords: replaced keyword 'xml' with 'XML' on tool-or-service/I5f6Tb`. This is distinct from the more mechanical **Description** column (`Update tool-or-service/I5f6Tb`) — Source answers "what was I doing and why", Description answers "what request actually went out". Entries logged before this column existed show `(unspecified)`.
+
 #### Column order
 
-Columns are ordered to surface the most useful information first: `time → type → ok → method → status → response → description → url → request`. The wide URL and request body columns are at the right so they do not crowd out the response.
+Columns are ordered to surface the most useful information first: `time → type → source → ok → method → status → response → description → url → request`. The wide URL and request body columns are at the right so they do not crowd out the response.
 
 #### Filters
 
-Filter by entry type (action / api), result (ok / failed), and free-text search across description, URL, request, and response.
+Filter by entry type (action / api), result (ok / failed), feature (derived from the part of Source before the first colon), and free-text search across source, description, URL, request, and response.
 
 #### Export
 
@@ -532,6 +550,7 @@ All write operations target the environment selected at login.
 | Get item | GET | `/api/{category-path}/{persistentId}` | Full item payload |
 | Update item | PUT | `/api/{category-path}/{persistentId}` | Requires full item payload |
 | Delete item | DELETE | `/api/{category-path}/{persistentId}` | No `?force=`; used to remove the merged-away item after an items merge |
+| Native merge | POST | `/api/{category-path}/merge?with={id}&with={id}` | Opt-in only (see [Native merge endpoint toggle](#native-merge-endpoint-toggle)) — hard-deletes every id in `with` and returns a **new** item with a freshly minted persistentId; no redirect is served from the retired ones |
 | List keyword concepts | GET | `/api/concept-search?types=keyword&perpage=100` | ~27 pages |
 | List all concepts | GET | `/api/concept-search?perpage=100` | ~152 pages; all vocabularies |
 | Get concept | GET | `/api/vocabularies/{vocab}/concepts/{code}` | Single concept by code; 404 if absent from that vocabulary |
@@ -585,13 +604,15 @@ All functions that communicate with the live Marketplace API. Every write functi
 | `_consolidate_actor_payload(actors)` | Merges email, website, and externalIds from a list of actor records; used before merge to preserve all attributes |
 | `merge_actors(keep_id, merge_ids)` | 3-step: GET all actors → PUT consolidated attributes → `POST /api/actors/{id}/merge?with={ids}` |
 | `get_item(category, persistent_id, api_url, bearer)` | `GET /api/{path}/{id}`; returns full item dict |
-| `put_item(category, persistent_id, item_data, api_url, bearer)` | `PUT /api/{path}/{id}`; logs the call |
+| `put_item(category, persistent_id, item_data, api_url, bearer, source="")` | `PUT /api/{path}/{id}`; logs the call. `source` is passed straight through to the Session Log — shared by several features (Keywords, Item Duplicates, OpenAIRE Enrichment), so unlike most write helpers here it can't infer its own caller and each one supplies its own "&lt;feature&gt;: &lt;what changed&gt;" string |
 | `delete_item(category, persistent_id, api_url, bearer)` | `DELETE /api/{path}/{id}` (no `?force=`, unlike actors/concepts) |
 | `fix_item_keyword(category, persistent_id, old_code, new_type, new_concept, api_url, bearer)` | GET item → replace matching keyword property → PUT back |
 | `consolidate_item_payload(keep_item, merge_item)` | Unions contributors, properties, externalIds, accessibleAt, media, and relatedItems (dropping self-references) from two item records into a PUT-ready payload |
 | `repoint_related_item(category, persistent_id, old_pid, new_pid, api_url, bearer)` | GET item → swap a `relatedItems` reference from `old_pid` to `new_pid`, deduping/dropping self-references → PUT back |
-| `merge_items(keep_category, keep_pid, merge_category, merge_pid, referrers, api_url, bearer, payload=None)` | GET both → PUT `payload` (or `consolidate_item_payload`'s result if `payload` is omitted) onto keep item → repoint every referrer → DELETE merge item. The Merge Items UI always passes its own checkbox-curated `payload`. |
+| `merge_items(keep_category, keep_pid, merge_category, merge_pid, referrers, api_url, bearer, payload=None, use_native=False)` | GET both → PUT `payload` (or `consolidate_item_payload`'s result if `payload` is omitted) onto keep item → repoint every referrer → DELETE merge item. The Merge Items UI always passes its own checkbox-curated `payload`. `use_native=True` delegates to `_merge_items_native()` instead. |
+| `_merge_items_native(category, keep_pid, merge_pid, payload, api_url, bearer)` | `POST /api/{path}/merge?with={keep_pid}&with={merge_pid}` — the Marketplace's own merge endpoint. Hard-deletes **both** ids and creates a new item from `payload` with a freshly minted persistentId (see [Native merge endpoint toggle](#native-merge-endpoint-toggle)); opt-in only |
 | `fetch_all_keyword_concepts(api_url, bearer)` | Paginated `GET /api/concept-search?types=keyword` |
+| `fetch_concepts_by_type(property_type_code, api_url, bearer)` | Paginated `GET /api/concept-search?types={code}` for any one property type — includes `vocabulary_code` per concept (not always the same as the type code, e.g. `activity`'s vocabulary is `tadirah2`), unlike `fetch_all_keyword_concepts()` |
 | `fetch_all_concepts(api_url, bearer)` | Paginated `GET /api/concept-search` (all types and vocabularies) |
 | `get_concept(vocab_code, concept_code, api_url, bearer)` | `GET /api/vocabularies/{vocab}/concepts/{code}`; the full concept record, or `None` on 404 |
 | `delete_concept(concept_code, vocab_code)` | `DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true`; URL-encodes the concept code |
@@ -604,7 +625,7 @@ Client for the [OpenAIRE Graph API](https://graph.openaire.eu/docs/apis/graph-ap
 | Function | Description |
 |---|---|
 | `normalize_doi(raw)` | Strips a `doi.org` URL or `doi:` prefix, returning the bare DOI |
-| `fetch_one(doi, token, timeout, retries)` | Single-DOI lookup (`GET .../research-products?pid={doi}`) with retry/backoff and `429` (rate limit) handling; returns `{"status": "found", "fields": {...}}`, `{"status": "not_found"}`, or `{"status": "error", "message": str}` |
+| `fetch_one(doi, token, timeout, retries)` | Single-DOI lookup (`GET .../research-products?pid={doi}`) with retry/backoff and `429` (rate limit) handling; returns `{"status": "found", "fields": {...}, "raw": {...}}`, `{"status": "not_found"}`, or `{"status": "error", "message": str}`. `fields["fos_codes"]` holds OpenAIRE's `FOS`-scheme subject codes (leading zeros stripped, e.g. `"0601"` → `"601"`) separately from `fields["keywords"]` (the `keyword`-scheme ones) — see the OpenAIRE Enrichment page's closed-vocab-first mapping. `raw` is the complete, unprocessed OpenAIRE record, kept so the page can show curators exactly what OpenAIRE returned, not just this toolkit's interpretation of it |
 | `fetch_many(dois, token, workers, timeout, use_cache)` | Concurrent batch lookup, throttled to 60/hour (unauthenticated) or 7200/hour (with a personal access token) via a shared rate limiter; checks/updates the on-disk cache at `data/openaire_cache.json` (30-day TTL, `found`/`not_found` results only — `error` results are always retried) |
 
 ### `lib/snapshot.py`
@@ -623,9 +644,11 @@ Client for the [OpenAIRE Graph API](https://graph.openaire.eu/docs/apis/graph-ap
 
 Maintains a persistent log at `logs/session_log.jsonl` (one JSON object per line), gitignored since entries can include account details and API responses.
 
-`log_action(description, ok)` — records a high-level event.
+`log_action(description, ok, source="")` — records a high-level event.
 
-`log_api(method, url, description, status, request, response, ok)` — records an HTTP API call. API error responses in standard JSON envelope format are automatically formatted into a readable summary.
+`log_api(method, url, description, status, request, response, ok, source="")` — records an HTTP API call. API error responses in standard JSON envelope format are automatically formatted into a readable summary.
+
+Both take an optional `source`: which page/feature triggered the call and what it did, e.g. `"OpenAIRE Enrichment: added year, publisher to 'SimilArITI'"` — stored as its own column, shown in the Session Log page, and filterable there by the feature name (the part before the first colon). Every call site in `lib/api.py` either hardcodes its own `source` (functions used by exactly one page) or, for the few functions shared across features (`put_item()`), accepts it as a parameter from the caller. Entries logged before this column existed simply have an empty `source`.
 
 `get_log()` / `get_log_df()` — read the full log back (list of dicts / DataFrame).
 
@@ -704,6 +727,8 @@ Live Marketplace API  ◄──►  lib/api.py  ◄──►  all write operatio
 | `openaire_doi_items` | `DataFrame` | OpenAIRE Enrichment | OpenAIRE Enrichment (survives lookup-button reruns) |
 | `openaire_lookup` | `dict` | OpenAIRE Enrichment | `doi → fetch_one()`-shaped result, keyed by DOI |
 | `openaire_apply_status` | `dict` | OpenAIRE Enrichment | `persistentId → (ok, message)` from Apply actions, persists across reruns |
+| `openaire_closed_vocabs` | `dict` | OpenAIRE Enrichment | `property type code → DataFrame` for the closed vocabularies checked before keyword (`standard`, `activity`) |
+| `openaire_discipline_concepts` | `dict` | OpenAIRE Enrichment | `discipline code → resolved concept dict or None`, cached per session |
 
 > The session log itself is **not** a session_state key — it's persisted to `logs/session_log.jsonl` on disk (see [`lib/logger.py`](#libloggerpy)), independent of any browser session.
 

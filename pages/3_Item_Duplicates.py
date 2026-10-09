@@ -400,6 +400,12 @@ with tab_find:
             disp_cols = [c for c in dict.fromkeys(disp_cols) if c in result.columns]
 
             display = result[disp_cols].copy()
+            if "source.label" in result.columns:
+                # Items added directly through the MP editor (not harvested from an
+                # external source) have no source.label at all — distinguish that
+                # from a real source name rather than showing a blank cell.
+                display["source"] = result["source.label"].fillna("(no source — manually added)")
+                disp_cols = disp_cols + ["source"]
             if "category" in result.columns and "persistentId" in result.columns:
                 display["Link"] = [
                     _mp_link(MP_SERVER, cat, pid) or ""
@@ -410,7 +416,10 @@ with tab_find:
             st.dataframe(
                 display,
                 use_container_width=True,
-                column_config={"Link": st.column_config.LinkColumn("Open in MP")},
+                column_config={
+                    "source": st.column_config.TextColumn("Source"),
+                    "Link": st.column_config.LinkColumn("Open in MP"),
+                },
                 hide_index=True,
             )
 
@@ -504,7 +513,9 @@ with tab_merge:
         "little data as possible is lost), and shows you the full outcome "
         "before anything is written. Other items that relate to the merged-away "
         "item are then repointed to the kept item, and the merged-away item is "
-        "deleted."
+        "deleted. A toggle further down lets you use the Marketplace's own "
+        "merge endpoint instead, for the rare case where neither item's "
+        "persistentId needs to stay stable — see its help text before using it."
     )
     st.caption(
         "Tip: find `persistentId` values on the **Find Duplicates** tab. "
@@ -664,11 +675,41 @@ with tab_merge:
 
                 st.divider()
 
-                confirmed_cb = st.checkbox(
-                    f"I understand that `{merge_pid}` will be permanently deleted and its data "
-                    f"folded into `{keep_pid}` as shown above. This cannot be undone.",
-                    key=f"merge_confirm_{merge_key}",
+                use_native = st.checkbox(
+                    "Use the Marketplace's native merge endpoint instead",
+                    key=f"merge_native_{merge_key}",
+                    help=(
+                        "POST /api/{category}/merge — instead of preserving `keep_pid`, this "
+                        "deletes **both** items and creates a brand-new item with a freshly "
+                        "minted persistentId (investigated against Stage; this isn't how actor "
+                        "merging works). The Marketplace serves no redirect from a retired "
+                        "persistentId, so every existing link to EITHER item breaks, not just "
+                        "the merged-away one. In exchange, the API repoints relatedItems on "
+                        "every other item that references either one — server-side, against "
+                        "live data — rather than this toolkit's own repoint step above, which "
+                        "only catches referrers found in the local snapshot. Use this only when "
+                        "neither persistentId needs to stay stable."
+                    ),
                 )
+                if use_native:
+                    st.warning(
+                        f"Both `{keep_pid}` and `{merge_pid}` will be deleted and replaced by a "
+                        f"**new** persistentId. Existing links to either one will break — the "
+                        f"Marketplace does not redirect from retired items."
+                    )
+
+                if use_native:
+                    confirm_label = (
+                        f"I understand that BOTH `{keep_pid}` and `{merge_pid}` will be "
+                        f"permanently deleted and replaced by a new item with the content "
+                        f"shown above. This cannot be undone."
+                    )
+                else:
+                    confirm_label = (
+                        f"I understand that `{merge_pid}` will be permanently deleted and its data "
+                        f"folded into `{keep_pid}` as shown above. This cannot be undone."
+                    )
+                confirmed_cb = st.checkbox(confirm_label, key=f"merge_confirm_{merge_key}")
 
                 if not is_moderator():
                     st.warning(
@@ -676,8 +717,12 @@ with tab_merge:
                         f"item) — your account role is '{current_role_label()}'."
                     )
 
+                button_label = (
+                    f"Merge `{keep_pid}` and `{merge_pid}` into a new item" if use_native
+                    else f"Merge `{merge_pid}` into `{keep_pid}`"
+                )
                 if st.button(
-                    f"Merge `{merge_pid}` into `{keep_pid}`",
+                    button_label,
                     type="primary",
                     key=f"merge_btn_{merge_key}",
                     disabled=not confirmed_cb or not is_moderator(),
@@ -689,6 +734,7 @@ with tab_merge:
                         referrer_pairs,
                         env["api_url"], st.session_state["bearer"],
                         payload=outcome,
+                        use_native=use_native,
                     )
                     if result_dict["ok"]:
                         item_merged[merge_key] = result_dict["message"]

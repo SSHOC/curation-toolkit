@@ -25,19 +25,32 @@ fix_item_keyword()           – replace a keyword property on an item and PUT i
 consolidate_item_payload()   – build a PUT-ready item merging attrs from two items
 repoint_related_item()       – swap a relatedItems reference on one item for another
 merge_items()                – GET both → consolidate → PUT keep → repoint referrers → DELETE merge item
+                                (or, with use_native=True, _merge_items_native())
+_merge_items_native()        – opt-in alternative using the Marketplace's own merge endpoint
 
-Note: the Marketplace API also exposes a dedicated per-category merge
-endpoint (POST /api/{category-path}/merge?with={persistentIds}, body =
-the *Core payload to apply to the survivor) plus a GET .../{id}/merge
-"preview" endpoint that computes a merge server-side. merge_items()
-deliberately does NOT use these — it fetches both full records, builds
-the consolidated payload itself, and PUTs it, so the curator gets full
-visibility into (and control over) exactly what is kept, especially for
-relatedItems, before anything is written.
+Note on the Marketplace's own per-category merge endpoint (POST
+/api/{category-path}/merge?with={persistentIds}, body = *Core payload; plus
+a GET .../{id}/merge "preview" that computes the same server-side): its
+behavior isn't documented beyond the OpenAPI shape and is easy to misread as
+"absorb `with` into {persistentId}", the way actor merging works. It does
+not work that way — investigated empirically against Stage (2026-10-09):
+every persistentId passed in `with` is hard-deleted, including one you
+might expect to survive, and the request body always becomes a *new* item
+with a freshly minted persistentId. Since the Marketplace serves no
+redirect from a retired persistentId, that breaks existing links to EITHER
+merged item, not just the discarded one — merge_items() instead fetches
+both full records, builds the consolidated payload itself, and PUTs it onto
+the item the curator chose to keep, preserving that persistentId. The native
+endpoint is still available as an opt-in (use_native=True) for when no
+persistentId involved needs to stay stable, since in exchange it repoints
+relatedItems on every other item that referenced either merged id —
+server-side, against live data, more thorough than repoint_related_item()'s
+local-snapshot-driven search.
 
 Concept / vocabulary helpers
 ----------------------------
 fetch_all_keyword_concepts() – paginated GET /api/concept-search?types=keyword
+fetch_concepts_by_type()     – paginated GET /api/concept-search?types={code}, any one property type
 fetch_all_concepts()         – paginated GET /api/concept-search (all types and vocabs)
 get_concept()                – GET /api/vocabularies/{vocab}/concepts/{code}; single concept by code, or None if absent
 delete_concept()             – DELETE /api/vocabularies/{vocab}/concepts/{code}?force=true
@@ -94,7 +107,7 @@ def fetch_all_actors(api_url: str, bearer: str) -> pd.DataFrame:
         lambda x: len(x) if isinstance(x, list) else (0 if pd.isna(x) else int(x))
     )
     result = df[["id", "name", "email", "website", "item_count"]].copy()
-    log_action(f"Fetched {len(result)} actors from API ({api_url})")
+    log_action(f"Fetched {len(result)} actors from API ({api_url})", source="Actors")
     return result
 
 
@@ -170,7 +183,8 @@ def verify_orphans(
     uncertain = sum(1 for v in results.values() if v is None)
     log_action(
         f"Verified {total} actor candidates — "
-        f"{orphaned} orphaned, {uncertain} uncertain"
+        f"{orphaned} orphaned, {uncertain} uncertain",
+        source="Actors",
     )
     return results
 
@@ -189,13 +203,14 @@ def delete_actor(actor_id: int) -> tuple[bool, str]:
             status=resp.status_code,
             response=resp.text[:300],
             ok=ok,
+            source=f"Actors: deleted actor {actor_id}",
         )
         if ok:
             return True, f"Actor {actor_id} deleted."
         return False, f"API returned {resp.status_code}: {resp.text[:200]}"
     except requests.RequestException as e:
         log_api("DELETE", url, f"Delete actor {actor_id} — request failed", status="error",
-                response=str(e), ok=False)
+                response=str(e), ok=False, source=f"Actors: deleted actor {actor_id}")
         return False, f"Request failed: {e}"
 
 
@@ -234,6 +249,55 @@ def fetch_all_keyword_concepts(api_url: str, bearer: str) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = pd.NA
     return df[["code", "label", "uri", "notation", "candidate", "definition"]].copy()
+
+
+def fetch_concepts_by_type(property_type_code: str, api_url: str, bearer: str) -> pd.DataFrame:
+    """
+    GET /api/concept-search?types={property_type_code} — paginate through all
+    pages for a single property type's vocabulary. Unlike
+    fetch_all_keyword_concepts() (which hardcodes "sshoc-keyword" for its one
+    known caller), this also returns the vocabulary code, since it isn't
+    always the same as the property type code (e.g. the `activity` property
+    type's vocabulary is `tadirah2`) — needed to build a correct
+    `concept: {..., vocabulary: {code}}` payload for a type this generic.
+
+    Used for the Marketplace's smaller closed vocabularies (e.g. `standard`,
+    `activity` — tens to a couple hundred concepts), not large ones like
+    `discipline` (1400+) or `object-format` (1900+), where a single-code
+    lookup via get_concept() is the better fit when the target code is
+    already known, or fetch_all_concepts() if a full unfiltered scan is
+    truly needed.
+
+    Returns a DataFrame with columns: code, label, uri, notation, candidate,
+    vocabulary_code.
+    """
+    url = f"{api_url}/api/concept-search"
+    headers = {"Authorization": bearer}
+    params = {"types": property_type_code, "perpage": 100, "page": 1}
+
+    resp = requests.get(url, headers=headers, params=params, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+
+    total_pages = data.get("pages", 1)
+    all_concepts = list(data.get("concepts", []))
+
+    for page in range(2, total_pages + 1):
+        r = requests.get(url, headers=headers, params={**params, "page": page}, timeout=15)
+        r.raise_for_status()
+        all_concepts.extend(r.json().get("concepts", []))
+
+    cols = ["code", "label", "uri", "notation", "candidate", "vocabulary_code"]
+    if not all_concepts:
+        return pd.DataFrame(columns=cols)
+
+    df = pd.json_normalize(all_concepts)
+    if "vocabulary.code" in df.columns:
+        df = df.rename(columns={"vocabulary.code": "vocabulary_code"})
+    for col in cols:
+        if col not in df.columns:
+            df[col] = pd.NA
+    return df[cols].copy()
 
 
 def fetch_all_concepts(api_url: str, bearer: str) -> pd.DataFrame:
@@ -321,12 +385,19 @@ def get_item(category: str, persistent_id: str, api_url: str, bearer: str) -> di
 
 
 def put_item(category: str, persistent_id: str, item_data: dict,
-             api_url: str, bearer: str) -> tuple[bool, str]:
+             api_url: str, bearer: str, source: str = "") -> tuple[bool, str]:
     """
     PUT a full item record back to the API (update in place).
 
     item_data should be the dict returned by get_item(), modified as needed.
     Returns (success, message) and logs the call to the session log.
+
+    `source` is passed straight through to log_api() — put_item() is shared by
+    several features (Keywords' fix_item_keyword, Item Duplicates' merge_items/
+    repoint_related_item, and the OpenAIRE Enrichment page), so unlike most
+    other write helpers in this module it can't infer on its own which one is
+    calling; each caller supplies its own human-readable "<feature>: <what
+    changed>" string.
     """
     import json as _json
     url = _item_url(api_url, category, persistent_id)
@@ -345,6 +416,7 @@ def put_item(category: str, persistent_id: str, item_data: dict,
                              "label": item_data.get("label", "")})[:500],
         response=resp.text[:300],
         ok=ok,
+        source=source,
     )
     if ok:
         return True, "Updated."
@@ -380,7 +452,11 @@ def fix_item_keyword(
     if not changed:
         return False, "Property not found in item."
 
-    return put_item(category, persistent_id, item, api_url, bearer)
+    new_label = new_concept.get("label") or new_concept.get("code") or new_type_code
+    return put_item(
+        category, persistent_id, item, api_url, bearer,
+        source=f"Keywords: replaced keyword '{old_concept_code}' with '{new_label}' on {category}/{persistent_id}",
+    )
 
 
 def delete_item(category: str, persistent_id: str, api_url: str, bearer: str) -> tuple[bool, str]:
@@ -402,13 +478,15 @@ def delete_item(category: str, persistent_id: str, api_url: str, bearer: str) ->
             status=resp.status_code,
             response=resp.text[:300],
             ok=ok,
+            source=f"Item Duplicates: deleted merged-away item {category}/{persistent_id}",
         )
         if ok:
             return True, f"{category}/{persistent_id} deleted."
         return False, f"API returned {resp.status_code}: {resp.text[:200]}"
     except requests.RequestException as e:
         log_api("DELETE", url, f"Delete {category}/{persistent_id} — request failed",
-                status="error", response=str(e), ok=False)
+                status="error", response=str(e), ok=False,
+                source=f"Item Duplicates: deleted merged-away item {category}/{persistent_id}")
         return False, f"Request failed: {e}"
 
 
@@ -573,7 +651,97 @@ def repoint_related_item(
         return False, "No relatedItems entry pointing at the merged-away item was found."
 
     item["relatedItems"] = new_related
-    return put_item(category, persistent_id, item, api_url, bearer)
+    return put_item(
+        category, persistent_id, item, api_url, bearer,
+        source=f"Item Duplicates: repointed relatedItems from {old_persistent_id} "
+               f"to {new_persistent_id} on {category}/{persistent_id}",
+    )
+
+
+def _merge_items_native(
+    category: str, keep_pid: str, merge_pid: str, payload: dict, api_url: str, bearer: str,
+) -> dict:
+    """
+    Merge via the Marketplace's own POST /api/{category-path}/merge?with={ids}
+    endpoint, instead of merge_items()'s default GET-consolidate-PUT-repoint-
+    DELETE flow.
+
+    Investigated empirically against Stage (2026-10-09) since its behavior
+    isn't documented beyond the OpenAPI shape, and it does NOT work the way
+    actor merging does:
+      - EVERY persistentId listed in `with` is hard-deleted — including
+        keep_pid. There is no way to tell the API "preserve this identity."
+      - `payload` becomes the content of a brand-new item with a freshly
+        minted persistentId. Confirmed via repeated live tests (both
+        single-id and two-id `with` lists).
+      - The Marketplace serves no redirect from a retired persistentId, so
+        every existing link/citation to EITHER merged item breaks, not just
+        the discarded one.
+      - In exchange, the API repoints relatedItems on every *other* item
+        that referenced either merged id — server-side, against live data —
+        confirmed via a live referrer item. This is more thorough than
+        repoint_related_item(), which only catches referrers already found
+        via a local snapshot search.
+
+    Because of the persistentId loss, this is opt-in only (see the "use
+    native merge endpoint" toggle on the Merge Items UI) — never the default.
+
+    Returns {"ok", "message", "repointed": [], "new_persistent_id"}. The
+    empty "repointed" list (vs. merge_items()'s per-referrer results) reflects
+    that the API does this itself; there is nothing for us to report per item.
+    """
+    import json as _json
+    path = _CATEGORY_PATH.get(category, category + "s")
+    url = f"{api_url}/api/{path}/merge"
+    resp = requests.post(
+        url,
+        params=[("with", keep_pid), ("with", merge_pid)],
+        headers={"Content-Type": "application/json", "Authorization": bearer},
+        json=payload,
+        timeout=30,
+    )
+    ok = resp.status_code in (200, 201)
+    new_pid = None
+    if ok:
+        try:
+            new_pid = resp.json().get("persistentId")
+        except ValueError:
+            ok = False
+
+    log_api(
+        "POST", f"{url}?with={keep_pid}&with={merge_pid}",
+        f"Native merge {category}/{keep_pid},{merge_pid}",
+        status=resp.status_code,
+        request=_json.dumps({"label": payload.get("label", "")})[:500],
+        response=resp.text[:300],
+        ok=ok,
+        source=(
+            f"Item Duplicates: native-merged {category}/{keep_pid} and {category}/{merge_pid} "
+            f"into new item {new_pid}" if ok else
+            f"Item Duplicates: native merge of {category}/{keep_pid} and {category}/{merge_pid} failed"
+        ),
+    )
+    if not ok:
+        return {
+            "ok": False,
+            "message": f"Native merge failed: HTTP {resp.status_code}: {resp.text[:300]}",
+            "repointed": [], "new_persistent_id": None,
+        }
+
+    log_action(
+        f"Native-merged {category}/{keep_pid} and {category}/{merge_pid} into new item {new_pid}",
+        source="Item Duplicates",
+    )
+    return {
+        "ok": True,
+        "message": (
+            f"Merged into new item `{new_pid}`. Both `{keep_pid}` and `{merge_pid}` were deleted — "
+            f"the Marketplace does not redirect from retired persistentIds, so update any external "
+            f"links that pointed to either one."
+        ),
+        "repointed": [],
+        "new_persistent_id": new_pid,
+    }
 
 
 def merge_items(
@@ -582,6 +750,7 @@ def merge_items(
     referrers: list[tuple[str, str]],
     api_url: str, bearer: str,
     payload: dict | None = None,
+    use_native: bool = False,
 ) -> dict:
     """
     Merge merge_pid into keep_pid (both must be the same category):
@@ -598,25 +767,40 @@ def merge_items(
     hand-picked which contributors/properties/external IDs/accessibleAt
     URLs/media/relatedItems survive the merge via checkboxes.
 
+    `use_native`, if True, uses the Marketplace's own merge endpoint instead
+    (see _merge_items_native()) — opt-in only, since it deletes *both*
+    persistentIds and mints a new one rather than preserving keep_pid.
+
     Referrer-repointing failures are collected but do not abort the merge;
     the merge item is only deleted once the keep item has been updated
     successfully. Returns:
-        {"ok": bool, "message": str, "repointed": [(persistentId, ok, msg), ...]}
+        {"ok": bool, "message": str, "repointed": [(persistentId, ok, msg), ...],
+         "new_persistent_id": str | None}
     """
     if keep_category != merge_category:
-        return {"ok": False, "message": "Items must be the same category to merge.", "repointed": []}
+        return {"ok": False, "message": "Items must be the same category to merge.",
+                "repointed": [], "new_persistent_id": None}
 
     try:
         keep_item = get_item(keep_category, keep_pid, api_url, bearer)
         merge_item = get_item(merge_category, merge_pid, api_url, bearer)
     except Exception as e:
-        return {"ok": False, "message": f"Failed to fetch items before merge: {e}", "repointed": []}
+        return {"ok": False, "message": f"Failed to fetch items before merge: {e}",
+                "repointed": [], "new_persistent_id": None}
 
     if payload is None:
         payload = consolidate_item_payload(keep_item, merge_item)
-    ok, msg = put_item(keep_category, keep_pid, payload, api_url, bearer)
+
+    if use_native:
+        return _merge_items_native(keep_category, keep_pid, merge_pid, payload, api_url, bearer)
+
+    ok, msg = put_item(
+        keep_category, keep_pid, payload, api_url, bearer,
+        source=f"Item Duplicates: merged {merge_category}/{merge_pid} into {keep_category}/{keep_pid}",
+    )
     if not ok:
-        return {"ok": False, "message": f"Failed to update keep item: {msg}", "repointed": []}
+        return {"ok": False, "message": f"Failed to update keep item: {msg}",
+                "repointed": [], "new_persistent_id": None}
 
     repointed: list[tuple[str, bool, str]] = []
     for ref_category, ref_pid in referrers:
@@ -629,13 +813,18 @@ def merge_items(
             "ok": False,
             "message": f"Kept item was updated, but deleting the merged-away item failed: {del_msg}",
             "repointed": repointed,
+            "new_persistent_id": None,
         }
 
-    log_action(f"Merged item {merge_category}/{merge_pid} into {keep_category}/{keep_pid}")
+    log_action(
+        f"Merged item {merge_category}/{merge_pid} into {keep_category}/{keep_pid}",
+        source="Item Duplicates",
+    )
     return {
         "ok": True,
         "message": f"Merged {merge_category}/{merge_pid} into {keep_category}/{keep_pid}.",
         "repointed": repointed,
+        "new_persistent_id": None,
     }
 
 
@@ -686,13 +875,15 @@ def delete_concept(concept_code: str, vocab_code: str = "sshoc-keyword") -> tupl
             status=resp.status_code,
             response=resp.text[:300],
             ok=ok,
+            source=f"Keywords: deleted concept '{concept_code}' from '{vocab_code}'",
         )
         if ok:
             return True, f"Concept '{concept_code}' deleted."
         return False, f"API returned {resp.status_code}: {resp.text[:200]}"
     except requests.RequestException as e:
         log_api("DELETE", url, f"Delete concept '{concept_code}' — request failed",
-                status="error", response=str(e), ok=False)
+                status="error", response=str(e), ok=False,
+                source=f"Keywords: deleted concept '{concept_code}' from '{vocab_code}'")
         return False, f"Request failed: {e}"
 
 
@@ -781,7 +972,7 @@ def create_snapshot_from_api(api_url: str, bearer: str, data_dir, env_label: str
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(all_items, fh)
     except Exception as e:
-        log_action(f"Snapshot creation failed: {e}", ok=False)
+        log_action(f"Snapshot creation failed: {e}", ok=False, source="Data Source")
         return False, f"Failed to save snapshot: {e}"
 
     # Write sidecar metadata so the Data page can show which environment this came from
@@ -799,7 +990,7 @@ def create_snapshot_from_api(api_url: str, bearer: str, data_dir, env_label: str
         pass  # metadata is best-effort
 
     msg = f"Created snapshot {out_path.name} with {len(all_items)} items from {api_url}"
-    log_action(msg)
+    log_action(msg, source="Data Source")
     return True, f"Created {out_path.name} with {len(all_items)} items."
 
 
@@ -921,11 +1112,13 @@ def merge_actors(keep_id: int, merge_ids: list) -> tuple[bool, str]:
                 status=put_resp.status_code,
                 request=str(payload)[:500],
                 response=put_resp.text[:300],
-                ok=True)
+                ok=True,
+                source=f"Actors: merged actor(s) {merge_ids} into {keep_id}")
     except Exception as e:
         log_api("PUT", put_url,
                 f"Failed to consolidate actor {keep_id} before merge",
-                status="error", response=str(e), ok=False)
+                status="error", response=str(e), ok=False,
+                source=f"Actors: merged actor(s) {merge_ids} into {keep_id}")
         return False, f"Failed to update keep actor before merge: {e}"
 
     # ── Step 3: merge ─────────────────────────────────────────────────────────
@@ -944,6 +1137,7 @@ def merge_actors(keep_id: int, merge_ids: list) -> tuple[bool, str]:
             status=resp.status_code,
             response=resp.text[:300],
             ok=ok,
+            source=f"Actors: merged actor(s) {merge_ids} into {keep_id}",
         )
         if ok:
             return True, f"Actor(s) {merge_ids} merged into {keep_id}."
@@ -951,5 +1145,6 @@ def merge_actors(keep_id: int, merge_ids: list) -> tuple[bool, str]:
     except requests.RequestException as e:
         log_api("POST", merge_url,
                 f"Merge actors {merge_ids} into {keep_id} — request failed",
-                status="error", response=str(e), ok=False)
+                status="error", response=str(e), ok=False,
+                source=f"Actors: merged actor(s) {merge_ids} into {keep_id}")
         return False, f"Request failed: {e}"

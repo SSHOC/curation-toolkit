@@ -7,6 +7,13 @@ Every login, API write call (merge, delete, PUT), and major operation
 by lib.logger.  This page provides filtering, full-text search, and export
 as CSV or JSON.
 
+Each entry carries a "source" — which page/feature triggered it and, ideally,
+what it did in plain terms (e.g. "OpenAIRE Enrichment: added year, publisher
+to 'SimilArITI'") — so entries from different tools can be told apart at a
+glance instead of all reading as a generic "Update tool-or-service/…". The
+Feature filter groups entries by the part of `source` before the first colon.
+Entries logged before this column existed show as "(unspecified)".
+
 The log is persistent — it survives closing the browser tab and restarting
 the app, and is shared across every session run against this installation
 (all users, all tabs). Use "Clear log" to permanently delete it.
@@ -42,6 +49,10 @@ if df.empty:
     )
     st.stop()
 
+# Entries logged before the "source" column existed have none — label them
+# distinctly rather than leaving a blank cell that looks broken.
+df["source"] = df["source"].fillna("").replace("", "(unspecified)")
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 n_api   = int((df["type"] == "api").sum())
 n_fail  = int((df["ok"] == False).sum())
@@ -51,32 +62,42 @@ c1.metric("Total entries", len(df))
 c2.metric("API calls", n_api)
 c3.metric("Failures", n_fail)
 
+# A "source" is "<feature>: <what happened>" (or just "<feature>" for a few
+# entries) — filtering works on the feature prefix, while the full string
+# stays visible (and searchable) in the Source column itself.
+df["feature"] = df["source"].str.split(":", n=1).str[0].str.strip()
+
 # ── Filters ───────────────────────────────────────────────────────────────────
-fc1, fc2, fc3 = st.columns([1, 1, 3])
+fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
 with fc1:
     type_filter = st.multiselect("Type", ["action", "api"], default=["action", "api"])
 with fc2:
     ok_filter = st.multiselect("Result", ["ok", "failed"], default=["ok", "failed"])
 with fc3:
-    search = st.text_input("Search description / URL / response", "")
+    all_features = sorted(df["feature"].unique().tolist())
+    feature_filter = st.multiselect("Feature", all_features, default=all_features)
+with fc4:
+    search = st.text_input("Search source / description / URL / response", "")
 
 view = df[df["type"].isin(type_filter)].copy()
 
 ok_bool = {True: "ok", False: "failed"}
 ok_vals = {v: k for k, v in ok_bool.items()}
 view = view[view["ok"].map(ok_bool).isin(ok_filter)]
+view = view[view["feature"].isin(feature_filter)]
 
 if search.strip():
     q = search.strip()
     mask = (
-        view["description"].str.contains(q, case=False, na=False)
+        view["source"].str.contains(q, case=False, na=False)
+        | view["description"].str.contains(q, case=False, na=False)
         | view["url"].str.contains(q, case=False, na=False)
         | view["response"].str.contains(q, case=False, na=False)
         | view["request"].str.contains(q, case=False, na=False)
     )
     view = view[mask]
 
-DISPLAY_COLS = ["time", "type", "ok", "method", "status", "response", "description", "url", "request"]
+DISPLAY_COLS = ["time", "type", "source", "ok", "method", "status", "response", "description", "url", "request"]
 st.dataframe(
     view[DISPLAY_COLS],
     use_container_width=True,
@@ -84,6 +105,7 @@ st.dataframe(
     column_config={
         "time":        st.column_config.TextColumn("Time", width="small"),
         "type":        st.column_config.TextColumn("Type", width="small"),
+        "source":      st.column_config.TextColumn("Source", width="large"),
         "ok":          st.column_config.CheckboxColumn("OK", width="small"),
         "method":      st.column_config.TextColumn("Method", width="small"),
         "status":      st.column_config.TextColumn("Status", width="small"),

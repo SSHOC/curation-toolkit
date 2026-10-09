@@ -18,7 +18,10 @@ Log entry columns:
   time        – ISO-8601 timestamp (seconds precision)
   type        – "action" for high-level events, "api" for HTTP calls
   ok          – True if the operation succeeded
-  description – Human-readable summary
+  source      – Which curation-toolkit page/feature triggered this, and what it did
+                in plain terms, e.g. "OpenAIRE Enrichment: added year, publisher to
+                'SimilArITI'". Empty for entries logged before this column existed.
+  description – Short mechanical summary (e.g. "Update tool-or-service/I5f6Tb")
   method      – HTTP verb (api entries only)
   url         – Full request URL (api entries only)
   request     – Abbreviated request body (api entries only, ≤ 2 000 chars)
@@ -32,7 +35,7 @@ import pathlib
 import threading
 import pandas as pd
 
-_COLS = ["time", "type", "ok", "description", "method", "url", "request", "status", "response"]
+_COLS = ["time", "type", "ok", "source", "description", "method", "url", "request", "status", "response"]
 
 _LOG_DIR = pathlib.Path(__file__).parent.parent / "logs"
 _LOG_FILE = _LOG_DIR / "session_log.jsonl"
@@ -47,12 +50,20 @@ def _append(entry: dict) -> None:
             fh.write(line + "\n")
 
 
-def log_action(description: str, ok: bool = True) -> None:
-    """Append a high-level action entry (non-API event) to the persistent log."""
+def log_action(description: str, ok: bool = True, source: str = "") -> None:
+    """
+    Append a high-level action entry (non-API event) to the persistent log.
+
+    `source` identifies which page/feature triggered this and, ideally, what it
+    did in plain terms (e.g. "Actors: merged actor(s) [12, 34] into 5") — shown
+    as its own column in the Session Log so entries from different tools aren't
+    all folded into the same generic phrasing.
+    """
     _append({
         "time":        datetime.datetime.now().isoformat(timespec="seconds"),
         "type":        "action",
         "ok":          ok,
+        "source":      source,
         "description": description,
         "method":      "",
         "url":         "",
@@ -92,6 +103,7 @@ def log_api(
     request: str = "",
     response: str = "",
     ok: bool | None = None,
+    source: str = "",
 ) -> None:
     """
     Append an API call entry to the persistent log.
@@ -106,6 +118,10 @@ def log_api(
     response    Optional response body (truncated to 1 000 chars; JSON error envelopes
                 are collapsed to their "error" / "message" fields for readability).
     ok          Explicit success flag.  If None it is inferred as status < 400.
+    source      Which page/feature triggered this call and what it did in plain
+                terms (e.g. "Keywords: replaced keyword 'xml' with 'XML'") — shown
+                as its own Session Log column, distinct from the more mechanical
+                `description`.
     """
     if ok is None:
         try:
@@ -116,6 +132,7 @@ def log_api(
         "time":        datetime.datetime.now().isoformat(timespec="seconds"),
         "type":        "api",
         "ok":          ok,
+        "source":      source,
         "description": description,
         "method":      method,
         "url":         url,

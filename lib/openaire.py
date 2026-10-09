@@ -31,7 +31,7 @@ import streamlit as st
 
 _API_URL = "https://api.openaire.eu/graph/v3/research-products"
 _CACHE_PATH = pathlib.Path(__file__).parent.parent / "data" / "openaire_cache.json"
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # bumped: "found" entries now also cache the raw API response
 _CACHE_TTL_DAYS = 30  # not-found results are re-checked periodically as OpenAIRE's harvest catches up
 
 _UNAUTH_PER_HOUR = 60
@@ -72,11 +72,14 @@ def _cache_entry_valid(entry: dict | None) -> bool:
     return (datetime.datetime.now() - fetched).days < _CACHE_TTL_DAYS
 
 
+_FOS_CODE_RE = re.compile(r"^(\d{2,6})\b")
+
+
 def _extract_fields(record: dict) -> dict:
     """
     Map a raw OpenAIRE research-product record onto the fields this toolkit
     proposes for missing Marketplace properties: year, publisher, language,
-    keyword, accessibleAt.
+    discipline, keyword/standard/activity, accessibleAt.
     """
     pub_date = record.get("publicationDate") or None
     year = pub_date[:4] if pub_date and re.match(r"^\d{4}", pub_date) else None
@@ -87,16 +90,31 @@ def _extract_fields(record: dict) -> dict:
     if not lang_code or lang_code.lower() == "und":
         lang_code = lang_label = None
 
-    # Only "keyword"-scheme subjects are free-text-like; "FOS" (Field of
-    # Science) subjects are classification codes (e.g. "05 social sciences"),
-    # not suitable as sshoc-keyword candidates.
+    # "keyword"-scheme subjects are free-text-like; "FOS" (Field of Science)
+    # subjects are classification codes (e.g. "05 social sciences",
+    # "0601 history and archaeology") from the same OECD/ÖFOS scheme the
+    # Marketplace's own closed `discipline` vocabulary uses — verified
+    # against the live API that the leading code, with leading zeros
+    # stripped ("0601" -> "601"), is this toolkit's discipline concept code
+    # too. Kept separate from `keywords` since they map to a different
+    # Marketplace property and vocabulary.
     keywords = []
+    fos_codes = []
     for s in record.get("subjects") or []:
         sub = (s or {}).get("subject") or {}
-        if sub.get("scheme") == "keyword" and sub.get("value"):
-            val = sub["value"].strip()
+        scheme, val = sub.get("scheme"), sub.get("value")
+        if not val:
+            continue
+        val = val.strip()
+        if scheme == "keyword":
             if val and val not in keywords:
                 keywords.append(val)
+        elif scheme == "FOS":
+            m = _FOS_CODE_RE.match(val)
+            if m:
+                code = str(int(m.group(1)))  # strips leading zeros: "0601" -> "601"
+                if code not in fos_codes:
+                    fos_codes.append(code)
 
     urls = []
     for inst in record.get("instances") or []:
@@ -112,6 +130,7 @@ def _extract_fields(record: dict) -> dict:
         "language_code": lang_code,
         "language_label": lang_label,
         "keywords": keywords,
+        "fos_codes": fos_codes,
         "urls": urls,
         "openaire_id": record.get("id"),
     }
@@ -120,7 +139,14 @@ def _extract_fields(record: dict) -> dict:
 def fetch_one(doi: str, token: str | None = None, timeout: int = 15, retries: int = 3) -> dict:
     """
     Look up a single (already-normalized) DOI. Returns one of:
-      {"status": "found", "fields": {...}}   – see _extract_fields() for keys
+      {"status": "found", "fields": {...}, "raw": {...}}  – fields: see
+                                            _extract_fields(); raw: the complete,
+                                            unprocessed OpenAIRE research-product
+                                            record, kept so curators can inspect
+                                            exactly what OpenAIRE returned (e.g. a
+                                            subject that didn't map to any
+                                            Marketplace field) rather than only
+                                            this toolkit's interpretation of it
       {"status": "not_found"}                – OpenAIRE has no record for this DOI
       {"status": "error", "message": str}    – network/HTTP failure after retries
     """
@@ -166,7 +192,7 @@ def fetch_one(doi: str, token: str | None = None, timeout: int = 15, retries: in
         results = data.get("results") or []
         if not results:
             return {"status": "not_found"}
-        return {"status": "found", "fields": _extract_fields(results[0])}
+        return {"status": "found", "fields": _extract_fields(results[0]), "raw": results[0]}
 
     return {"status": "error", "message": "Exhausted retries"}
 
